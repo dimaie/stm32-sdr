@@ -32,6 +32,11 @@
 			<locationURI>PARENT-2-PROJECT_LOC/readme.txt</locationURI>
 		</link>
 		<link>
+			<name>Middlewares/Src</name>
+			<type>2</type>
+			<location>C:/Users/dmitr/STM32CubeIDE/workspace_1.19.0/SDR/Middlewares/DSP/Src</location>
+		</link>
+		<link>
 			<name>Utilities/lcd_log.c</name>
 			<type>1</type>
 			<locationURI>PARENT-2-PROJECT_LOC/Utilities/Log/lcd_log.c</locationURI>

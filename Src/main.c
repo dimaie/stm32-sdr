@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <stdint.h>
 #include "stm32f7xx_hal.h"
 #define ARM_MATH_CM7
 #include "arm_math.h"  // For Q15 operations
@@ -53,6 +54,33 @@ volatile uint8_t lpf_enabled = 1;
 #define SINE_TABLE_SIZE 1024
 q15_t sine_table[SINE_TABLE_SIZE];
 
+
+#define NUM_TAPS 64
+#define BLOCK_SIZE 64   // must match your audio buffer size
+
+/* 64-tap FIR LPF, cutoff 1 kHz @ 48 kHz, Hamming window, scaled to Q15 */
+const q15_t firCoeffs[NUM_TAPS] = {
+      78,     95,    130,    184,    257,    349,    460,    589,
+     734,    894,   1067,   1250,   1439,   1632,   1825,   2016,
+    2201,   2377,   2540,   2687,   2814,   2920,   3000,   3053,
+    3080,   3080,   3053,   3000,   2920,   2814,   2687,   2540,
+    2377,   2201,   2016,   1825,   1632,   1439,   1250,   1067,
+     894,    734,    589,    460,    349,    257,    184,    130,
+      95,     78,     72,     78,     95,    130,    184,    257,
+     349,    460,    589,    734,    894,   1067,   1250,   1439
+};
+
+arm_fir_instance_q15 S;
+// Use DMA half-buffer size or any safe maximum
+#define FIR_BLOCK_MAX (AUDIO_BUFFER_SIZE / 2)
+
+q15_t firState[NUM_TAPS + FIR_BLOCK_MAX - 1];
+
+void init_fir(void) {
+    arm_fir_init_q15(&S, NUM_TAPS, (q15_t *)firCoeffs, firState, FIR_BLOCK_MAX);
+}
+
+
 // Initialize sine table (call once in main)
 void init_sine_table(void) {
     for (int i = 0; i < SINE_TABLE_SIZE; i++) {
@@ -73,36 +101,46 @@ float freq = 200.0f; // current frequency
 int32_t lpf_out = 0;
 
 void FillBuffer(int16_t *buf, int length) {
-    for (int n = 0; n < length; n++) {
-        // Top 10 bits of phase_acc for 1024-point sine table
-        uint32_t index = phase_acc >> 22;
-        int16_t raw_sample = sine_table[index];  // Q15
+    static q15_t inputBlock[FIR_BLOCK_MAX];
+    static q15_t outputBlock[FIR_BLOCK_MAX];
 
-        int16_t output_sample;
-        if (lpf_enabled) {
-            // LPF in Q15
-            int32_t delta = (int32_t)raw_sample - lpf_out; // delta in Q15
-            lpf_out += (alpha_q15 * delta) >> 15;          // LPF accumulator in Q15
-            output_sample = (int16_t)lpf_out;              // cast to int16_t
-        } else {
-            output_sample = raw_sample;
+    int processed = 0;
+    while (processed < length) {
+        int nBlock = (length - processed) > FIR_BLOCK_MAX ? FIR_BLOCK_MAX : (length - processed);
+
+        // Generate sine samples for this block
+        for (int n = 0; n < nBlock; n++) {
+            uint32_t index = phase_acc >> (32 - 10);
+            inputBlock[n] = sine_table[index];
+
+            // Advance phase
+            phase_acc += phase_inc;
+            if (phase_acc >= ((uint32_t)SINE_TABLE_SIZE << 22))
+                phase_acc -= ((uint32_t)SINE_TABLE_SIZE << 22);
         }
 
-        // Stereo output
-        buf[2*n]   = output_sample;
-        buf[2*n+1] = output_sample;
+        if (lpf_enabled) {
+            arm_fir_q15(&S, inputBlock, outputBlock, nBlock);
 
-        // Advance phase accumulator
-        phase_acc += phase_inc;
+            for (int n = 0; n < nBlock; n++) {
+                buf[2*(processed + n)]   = outputBlock[n];
+                buf[2*(processed + n)+1] = outputBlock[n];
+            }
+        } else {
+            for (int n = 0; n < nBlock; n++) {
+                buf[2*(processed + n)]   = inputBlock[n];
+                buf[2*(processed + n)+1] = inputBlock[n];
+            }
+        }
+
+        processed += nBlock;
     }
 
-    // Update sweep frequency
-    freq += direction * freq_step;
+    // Update frequency sweep
+    freq += direction * 2.0f;
     if (freq >= 5000.0f) { freq = 5000.0f; direction = -1; }
     if (freq <= 200.0f)  { freq = 200.0f;  direction = 1; }
 
-    // Recalculate phase increment
-    //phase_inc = (uint32_t)((freq / AUDIO_FREQUENCY) * 4294967296.0f);
     phase_inc = (uint32_t)((freq * (1ULL << 32)) / AUDIO_FREQUENCY);
 }
 
@@ -145,6 +183,7 @@ int main(void) {
 	/* Init TS module */
 	BSP_TS_Init(BSP_LCD_GetXSize(), BSP_LCD_GetYSize());
 
+	arm_fir_init_q15(&S, NUM_TAPS, (q15_t *)firCoeffs, firState, BLOCK_SIZE);
 	init_sine_table();
 	FillBuffer(audio_buffer, AUDIO_BUFFER_SIZE);
 
