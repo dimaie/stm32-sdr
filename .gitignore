@@ -1,0 +1,21 @@
+# STM32CubeIDE / Eclipse
+*.o
+*.d
+*.elf
+*.bin
+*.map
+*.list
+*.srec
+*.su
+*.log
+*.launch
+.settings/
+.metadata/
+Debug/
+Release/
+build/
+
+# IDE-specific
+.vscode/
+.idea/
+*.swp
