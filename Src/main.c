@@ -23,8 +23,13 @@
 #include "arm_math.h"  // For Q15 operations
 #include "main.h"
 #include "math.h"
+#include "si5351.h"
 #include "stm32746g_discovery_audio.h"
 #include "stm32746g_discovery.h"
+#include "stm32f7xx_hal_i2c.h"
+
+// I2C for SI5351
+I2C_HandleTypeDef hi2c1;
 /* Includes ------------------------------------------------------------------*/
 /* Private typedef -----------------------------------------------------------*/
 /* Private define ------------------------------------------------------------*/
@@ -37,7 +42,7 @@ static void MPU_Config(void);
 static void SystemClock_Config(void);
 static void AUDIO_InitApplication(void);
 static void CPU_CACHE_Enable(void);
-
+static void MX_I2C1_Init(void);
 /* Private functions ---------------------------------------------------------*/
 
 #define AUDIO_BUFFER_SIZE   480
@@ -53,21 +58,16 @@ volatile uint8_t lpf_enabled = 1;
 #define SINE_TABLE_SIZE 1024
 q15_t sine_table[SINE_TABLE_SIZE];
 
-
 #define NUM_TAPS 64
 #define BLOCK_SIZE 64   // must match your audio buffer size
 
 /* 64-tap FIR LPF, cutoff 1 kHz @ 48 kHz, Hamming window, scaled to Q15 */
-const q15_t firCoeffs[NUM_TAPS] = {
-      78,     95,    130,    184,    257,    349,    460,    589,
-     734,    894,   1067,   1250,   1439,   1632,   1825,   2016,
-    2201,   2377,   2540,   2687,   2814,   2920,   3000,   3053,
-    3080,   3080,   3053,   3000,   2920,   2814,   2687,   2540,
-    2377,   2201,   2016,   1825,   1632,   1439,   1250,   1067,
-     894,    734,    589,    460,    349,    257,    184,    130,
-      95,     78,     72,     78,     95,    130,    184,    257,
-     349,    460,    589,    734,    894,   1067,   1250,   1439
-};
+const q15_t firCoeffs[NUM_TAPS] = { 78, 95, 130, 184, 257, 349, 460, 589, 734,
+		894, 1067, 1250, 1439, 1632, 1825, 2016, 2201, 2377, 2540, 2687, 2814,
+		2920, 3000, 3053, 3080, 3080, 3053, 3000, 2920, 2814, 2687, 2540, 2377,
+		2201, 2016, 1825, 1632, 1439, 1250, 1067, 894, 734, 589, 460, 349, 257,
+		184, 130, 95, 78, 72, 78, 95, 130, 184, 257, 349, 460, 589, 734, 894,
+		1067, 1250, 1439 };
 
 arm_fir_instance_q15 S;
 // Use DMA half-buffer size or any safe maximum
@@ -76,20 +76,20 @@ arm_fir_instance_q15 S;
 q15_t firState[NUM_TAPS + FIR_BLOCK_MAX - 1];
 
 void init_fir(void) {
-    arm_fir_init_q15(&S, NUM_TAPS, (q15_t *)firCoeffs, firState, FIR_BLOCK_MAX);
+	arm_fir_init_q15(&S, NUM_TAPS, (q15_t*) firCoeffs, firState, FIR_BLOCK_MAX);
 }
-
 
 // Initialize sine table (call once in main)
 void init_sine_table(void) {
-    for (int i = 0; i < SINE_TABLE_SIZE; i++) {
-    	sine_table[i] = (q15_t)(32767.0f * sinf(2 * PI * i / SINE_TABLE_SIZE));
-    }
+	for (int i = 0; i < SINE_TABLE_SIZE; i++) {
+		sine_table[i] = (q15_t) (32767.0f * sinf(2 * PI * i / SINE_TABLE_SIZE));
+	}
 }
 
 // Phase accumulator
 uint32_t phase_acc = 0;
-uint32_t phase_inc = (uint32_t)((float)SINE_TABLE_SIZE * 200 / AUDIO_FREQUENCY); // initial freq 200 Hz
+uint32_t phase_inc =
+		(uint32_t) ((float) SINE_TABLE_SIZE * 200 / AUDIO_FREQUENCY); // initial freq 200 Hz
 
 const q15_t alpha_q15 = 2621; // alpha = 0.08 in Q15 (0.08*32768≈2621)
 
@@ -100,47 +100,55 @@ float freq = 200.0f; // current frequency
 int32_t lpf_out = 0;
 
 void FillBuffer(int16_t *buf, int length) {
-    static q15_t inputBlock[FIR_BLOCK_MAX];
-    static q15_t outputBlock[FIR_BLOCK_MAX];
+	static q15_t inputBlock[FIR_BLOCK_MAX];
+	static q15_t outputBlock[FIR_BLOCK_MAX];
 
-    int processed = 0;
-    while (processed < length) {
-        int nBlock = (length - processed) > FIR_BLOCK_MAX ? FIR_BLOCK_MAX : (length - processed);
+	int processed = 0;
+	while (processed < length) {
+		int nBlock =
+				(length - processed) > FIR_BLOCK_MAX ?
+						FIR_BLOCK_MAX : (length - processed);
 
-        // Generate sine samples for this block
-        for (int n = 0; n < nBlock; n++) {
-            uint32_t index = phase_acc >> (32 - 10);
-            inputBlock[n] = sine_table[index];
+		// Generate sine samples for this block
+		for (int n = 0; n < nBlock; n++) {
+			uint32_t index = phase_acc >> (32 - 10);
+			inputBlock[n] = sine_table[index];
 
-            // Advance phase
-            phase_acc += phase_inc;
-            if (phase_acc >= ((uint32_t)SINE_TABLE_SIZE << 22))
-                phase_acc -= ((uint32_t)SINE_TABLE_SIZE << 22);
-        }
+			// Advance phase
+			phase_acc += phase_inc;
+			if (phase_acc >= ((uint32_t) SINE_TABLE_SIZE << 22))
+				phase_acc -= ((uint32_t) SINE_TABLE_SIZE << 22);
+		}
 
-        if (lpf_enabled) {
-            arm_fir_q15(&S, inputBlock, outputBlock, nBlock);
+		if (lpf_enabled) {
+			arm_fir_q15(&S, inputBlock, outputBlock, nBlock);
 
-            for (int n = 0; n < nBlock; n++) {
-                buf[2*(processed + n)]   = outputBlock[n];
-                buf[2*(processed + n)+1] = outputBlock[n];
-            }
-        } else {
-            for (int n = 0; n < nBlock; n++) {
-                buf[2*(processed + n)]   = inputBlock[n];
-                buf[2*(processed + n)+1] = inputBlock[n];
-            }
-        }
+			for (int n = 0; n < nBlock; n++) {
+				buf[2 * (processed + n)] = outputBlock[n];
+				buf[2 * (processed + n) + 1] = outputBlock[n];
+			}
+		} else {
+			for (int n = 0; n < nBlock; n++) {
+				buf[2 * (processed + n)] = inputBlock[n];
+				buf[2 * (processed + n) + 1] = inputBlock[n];
+			}
+		}
 
-        processed += nBlock;
-    }
+		processed += nBlock;
+	}
 
-    // Update frequency sweep
-    freq += direction * 2.0f;
-    if (freq >= 5000.0f) { freq = 5000.0f; direction = -1; }
-    if (freq <= 200.0f)  { freq = 200.0f;  direction = 1; }
+	// Update frequency sweep
+	freq += direction * 2.0f;
+	if (freq >= 5000.0f) {
+		freq = 5000.0f;
+		direction = -1;
+	}
+	if (freq <= 200.0f) {
+		freq = 200.0f;
+		direction = 1;
+	}
 
-    phase_inc = (uint32_t)((freq * (1ULL << 32)) / AUDIO_FREQUENCY);
+	phase_inc = (uint32_t) ((freq * (1ULL << 32)) / AUDIO_FREQUENCY);
 }
 
 void BSP_AUDIO_OUT_HalfTransfer_CallBack(void) {
@@ -174,6 +182,7 @@ int main(void) {
 
 	/* Configure the system clock to 200 MHz */
 	SystemClock_Config();
+	MX_I2C1_Init();
 	BSP_PB_Init(BUTTON_KEY, BUTTON_MODE_GPIO);
 
 	/* Init Audio Application */
@@ -182,14 +191,20 @@ int main(void) {
 	/* Init TS module */
 	BSP_TS_Init(BSP_LCD_GetXSize(), BSP_LCD_GetYSize());
 
-	arm_fir_init_q15(&S, NUM_TAPS, (q15_t *)firCoeffs, firState, BLOCK_SIZE);
+	arm_fir_init_q15(&S, NUM_TAPS, (q15_t*) firCoeffs, firState, BLOCK_SIZE);
 	init_sine_table();
 	FillBuffer(audio_buffer, AUDIO_BUFFER_SIZE);
 
 	// Start playing in circular mode
 	BSP_AUDIO_OUT_Play((uint16_t*) audio_buffer, sizeof(audio_buffer));
 
+
 	uint8_t last_button_state = BSP_PB_GetState(BUTTON_KEY);
+	const int32_t correction = 978;
+	si5351_Init(correction);
+	si5351_SetupCLK0(28000000, SI5351_DRIVE_STRENGTH_4MA);
+	si5351_SetupCLK2(21000000, SI5351_DRIVE_STRENGTH_4MA);
+	si5351_EnableOutputs((1<<0) | (1<<2));
 
 	while (1) {
 		uint8_t current_button_state = BSP_PB_GetState(BUTTON_KEY);
@@ -240,6 +255,39 @@ static void AUDIO_InitApplication(void) {
 
 	LCD_LOG_SetHeader((uint8_t*) "SDR Project");
 	BSP_AUDIO_OUT_Init(OUTPUT_DEVICE_HEADPHONE, VOLUME, AUDIO_FREQUENCY);
+}
+
+static void MX_I2C1_Init(void) {
+	GPIO_InitTypeDef GPIO_InitStruct = { 0 };
+
+	// Enable clocks
+	__HAL_RCC_GPIOB_CLK_ENABLE();
+	__HAL_RCC_I2C1_CLK_ENABLE();
+
+	// Configure PB8 = SCL, PB9 = SDA
+	GPIO_InitStruct.Pin = GPIO_PIN_8 | GPIO_PIN_9;
+	GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;      // Open-drain
+	GPIO_InitStruct.Pull = GPIO_PULLUP;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+	GPIO_InitStruct.Alternate = GPIO_AF4_I2C1;
+	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+	// Initialize I2C1 peripheral
+	hi2c1.Instance = I2C1;
+	hi2c1.Init.Timing = 0x20404768;    // 100 kHz standard mode
+	hi2c1.Init.OwnAddress1 = 0;
+	hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+	hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+	hi2c1.Init.OwnAddress2 = 0;
+	hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+	hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+	hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+
+	if (HAL_I2C_Init(&hi2c1) != HAL_OK) {
+		// Initialization error
+		while (1)
+			;
+	}
 }
 
 /**
