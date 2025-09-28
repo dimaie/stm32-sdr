@@ -20,7 +20,6 @@
 #include <string.h>
 #include <stdint.h>
 #include "stm32f7xx_hal.h"
-#define ARM_MATH_CM7
 #include "arm_math.h"  // For Q15 operations
 #include "main.h"
 #include "math.h"
