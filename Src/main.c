@@ -1,20 +1,7 @@
-/**
- ******************************************************************************
- * @file    Audio/SDR/Src/main.c
- * @author  MCD Application Team
- * @brief   Audio playback and record main file.
- ******************************************************************************
- * @attention
- *
- * Copyright (c) 2016 STMicroelectronics.
- * All rights reserved.
- *
- * This software is licensed under terms that can be found in the LICENSE file
- * in the root directory of this software component.
- * If no LICENSE file comes with this software, it is provided AS-IS.
- *
- ******************************************************************************
- */
+/* main.c — loopback proof-of-concept: line-in -> headphone out
+   Minimal changes: DSP generator + FIR kept in file but not used in signal path.
+*/
+
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -30,10 +17,7 @@
 
 // I2C for SI5351
 I2C_HandleTypeDef hi2c1;
-/* Includes ------------------------------------------------------------------*/
-/* Private typedef -----------------------------------------------------------*/
-/* Private define ------------------------------------------------------------*/
-/* Private macro -------------------------------------------------------------*/
+
 /* Private variables ---------------------------------------------------------*/
 AUDIO_ApplicationTypeDef appli_state = APPLICATION_IDLE;
 
@@ -43,16 +27,16 @@ static void SystemClock_Config(void);
 static void AUDIO_InitApplication(void);
 static void CPU_CACHE_Enable(void);
 static void MX_I2C1_Init(void);
-/* Private functions ---------------------------------------------------------*/
 
-#define AUDIO_BUFFER_SIZE   480
-#define AUDIO_FREQUENCY     48000
-#define VOLUME              10
+/* Configuration -------------------------------------------------------------*/
+#define AUDIO_BUFFER_SIZE   512
+#define AUDIO_FREQUENCY     AUDIO_FREQUENCY_48K
+#define VOLUME              70
 
-// Sweep parameters
-float phase = 0.0f;
-float freq_step = 2.0f;
-int16_t audio_buffer[AUDIO_BUFFER_SIZE * 2]; // stereo
+/* Audio Buffers ------------------------------------------------------------*/
+int16_t output_buffer[AUDIO_BUFFER_SIZE];   // stereo output buffer
+int16_t input_buffer[AUDIO_BUFFER_SIZE];   // stereo input buffer (loopback source)
+
 volatile uint8_t lpf_enabled = 1;
 
 #define SINE_TABLE_SIZE 1024
@@ -62,34 +46,32 @@ q15_t sine_table[SINE_TABLE_SIZE];
 #define BLOCK_SIZE 64   // must match your audio buffer size
 
 /* 64-tap FIR LPF, cutoff 1 kHz @ 48 kHz, Hamming window, scaled to Q15 */
-const q15_t firCoeffs[NUM_TAPS] = { 78, 95, 130, 184, 257, 349, 460, 589, 734,
-		894, 1067, 1250, 1439, 1632, 1825, 2016, 2201, 2377, 2540, 2687, 2814,
-		2920, 3000, 3053, 3080, 3080, 3053, 3000, 2920, 2814, 2687, 2540, 2377,
-		2201, 2016, 1825, 1632, 1439, 1250, 1067, 894, 734, 589, 460, 349, 257,
-		184, 130, 95, 78, 72, 78, 95, 130, 184, 257, 349, 460, 589, 734, 894,
-		1067, 1250, 1439 };
+const q15_t firCoeffs[NUM_TAPS] = {
+    78,95,130,184,257,349,460,589,734,894,1067,1250,1439,1632,1825,2016,
+    2201,2377,2540,2687,2814,2920,3000,3053,3080,3080,3053,3000,2920,2814,2687,2540,
+    2377,2201,2016,1825,1632,1439,1250,1067,894,734,589,460,349,257,184,130,95,
+    78,72,78,95,130,184,257,349,460,589,734,894,1067,1250,1439
+};
 
 arm_fir_instance_q15 S;
 // Use DMA half-buffer size or any safe maximum
 #define FIR_BLOCK_MAX (AUDIO_BUFFER_SIZE / 2)
-
 q15_t firState[NUM_TAPS + FIR_BLOCK_MAX - 1];
 
 void init_fir(void) {
-	arm_fir_init_q15(&S, NUM_TAPS, (q15_t*) firCoeffs, firState, FIR_BLOCK_MAX);
+    arm_fir_init_q15(&S, NUM_TAPS, (q15_t*) firCoeffs, firState, FIR_BLOCK_MAX);
 }
 
 // Initialize sine table (call once in main)
 void init_sine_table(void) {
-	for (int i = 0; i < SINE_TABLE_SIZE; i++) {
-		sine_table[i] = (q15_t) (32767.0f * sinf(2 * PI * i / SINE_TABLE_SIZE));
-	}
+    for (int i = 0; i < SINE_TABLE_SIZE; i++) {
+        sine_table[i] = (q15_t)(32767.0f * sinf(2 * PI * i / SINE_TABLE_SIZE));
+    }
 }
 
 // Phase accumulator
 uint32_t phase_acc = 0;
-uint32_t phase_inc =
-		(uint32_t) ((float) SINE_TABLE_SIZE * 200 / AUDIO_FREQUENCY); // initial freq 200 Hz
+uint32_t phase_inc = (uint32_t)((float)SINE_TABLE_SIZE * 200 / AUDIO_FREQUENCY); // initial freq 200 Hz
 
 const q15_t alpha_q15 = 2621; // alpha = 0.08 in Q15 (0.08*32768≈2621)
 
@@ -99,196 +81,204 @@ float freq = 200.0f; // current frequency
 // LPF state: int32_t accumulator in Q15
 int32_t lpf_out = 0;
 
+/* FillBuffer: unchanged — generates sine + optional LPF, currently not used in signal path */
 void FillBuffer(int16_t *buf, int length) {
-	static q15_t inputBlock[FIR_BLOCK_MAX];
-	static q15_t outputBlock[FIR_BLOCK_MAX];
+    static q15_t inputBlock[FIR_BLOCK_MAX];
+    static q15_t outputBlock[FIR_BLOCK_MAX];
 
-	int processed = 0;
-	while (processed < length) {
-		int nBlock =
-				(length - processed) > FIR_BLOCK_MAX ?
-						FIR_BLOCK_MAX : (length - processed);
+    int processed = 0;
+    while (processed < length) {
+        int nBlock = (length - processed) > FIR_BLOCK_MAX ? FIR_BLOCK_MAX : (length - processed);
 
-		// Generate sine samples for this block
-		for (int n = 0; n < nBlock; n++) {
-			uint32_t index = phase_acc >> (32 - 10);
-			inputBlock[n] = sine_table[index];
+        // Generate sine samples for this block
+        for (int n = 0; n < nBlock; n++) {
+            uint32_t index = phase_acc >> (32 - 10);
+            inputBlock[n] = sine_table[index];
 
-			// Advance phase
-			phase_acc += phase_inc;
-			if (phase_acc >= ((uint32_t) SINE_TABLE_SIZE << 22))
-				phase_acc -= ((uint32_t) SINE_TABLE_SIZE << 22);
-		}
+            // Advance phase
+            phase_acc += phase_inc;
+            if (phase_acc >= ((uint32_t)SINE_TABLE_SIZE << 22))
+                phase_acc -= ((uint32_t)SINE_TABLE_SIZE << 22);
+        }
 
-		if (lpf_enabled) {
-			arm_fir_q15(&S, inputBlock, outputBlock, nBlock);
+        if (lpf_enabled) {
+            arm_fir_q15(&S, inputBlock, outputBlock, nBlock);
 
-			for (int n = 0; n < nBlock; n++) {
-				buf[2 * (processed + n)] = outputBlock[n];
-				buf[2 * (processed + n) + 1] = outputBlock[n];
-			}
-		} else {
-			for (int n = 0; n < nBlock; n++) {
-				buf[2 * (processed + n)] = inputBlock[n];
-				buf[2 * (processed + n) + 1] = inputBlock[n];
-			}
-		}
+            for (int n = 0; n < nBlock; n++) {
+                buf[2 * (processed + n)] = outputBlock[n];
+                buf[2 * (processed + n) + 1] = outputBlock[n];
+            }
+        } else {
+            for (int n = 0; n < nBlock; n++) {
+                buf[2 * (processed + n)] = inputBlock[n];
+                buf[2 * (processed + n) + 1] = inputBlock[n];
+            }
+        }
 
-		processed += nBlock;
-	}
+        processed += nBlock;
+    }
 
-	// Update frequency sweep
-	freq += direction * 2.0f;
-	if (freq >= 5000.0f) {
-		freq = 5000.0f;
-		direction = -1;
-	}
-	if (freq <= 200.0f) {
-		freq = 200.0f;
-		direction = 1;
-	}
+    // Update frequency sweep
+    freq += direction * 2.0f;
+    if (freq >= 5000.0f) {
+        freq = 5000.0f;
+        direction = -1;
+    }
+    if (freq <= 200.0f) {
+        freq = 200.0f;
+        direction = 1;
+    }
 
-	phase_inc = (uint32_t) ((freq * (1ULL << 32)) / AUDIO_FREQUENCY);
+    phase_inc = (uint32_t)((freq * (1ULL << 32)) / AUDIO_FREQUENCY);
 }
 
+/* ----------------- AUDIO CALLBACKS: set up loopback ---------------------- */
+
+/* Output callbacks left empty so DMA playback reads from audio_buffer that we fill from input */
 void BSP_AUDIO_OUT_HalfTransfer_CallBack(void) {
-	// refill first half of buffer
-	FillBuffer(&audio_buffer[0], AUDIO_BUFFER_SIZE / 2);
+    /* no-op: audio_buffer already filled by input callbacks */
 }
 
 void BSP_AUDIO_OUT_TransferComplete_CallBack(void) {
-	// refill second half of buffer
-	FillBuffer(&audio_buffer[AUDIO_BUFFER_SIZE], AUDIO_BUFFER_SIZE / 2);
+    /* no-op: audio_buffer already filled by input callbacks */
 }
-/**
- * @brief  Main program
- * @param  None
- * @retval None
- */
+
+/* Input callbacks copy input buffer halves directly into the corresponding output buffer halves */
+void BSP_AUDIO_IN_HalfTransfer_CallBack(void) {
+    memcpy(&output_buffer[0],
+           &input_buffer[0],
+           AUDIO_BUFFER_SIZE);
+}
+
+void BSP_AUDIO_IN_TransferComplete_CallBack(void) {
+    memcpy(&output_buffer[AUDIO_BUFFER_SIZE / 2],
+           &input_buffer[AUDIO_BUFFER_SIZE / 2],
+           AUDIO_BUFFER_SIZE);
+}
+
+/* ----------------- Main -------------------------------------------------- */
+
 int main(void) {
-	/* Configure the MPU attributes */
-	MPU_Config();
+    /* Configure the MPU attributes */
+    MPU_Config();
 
-	/* Enable the CPU Cache */
-	CPU_CACHE_Enable();
+    /* Enable the CPU Cache */
+    CPU_CACHE_Enable();
 
-	/* STM32F7xx HAL library initialization:
-	 - Configure the Flash ART accelerator on ITCM interface
-	 - Configure the Systick to generate an interrupt each 1 msec
-	 - Set NVIC Group Priority to 4
-	 - Global MSP (MCU Support Package) initialization
-	 */
-	HAL_Init();
+    /* STM32F7xx HAL library initialization */
+    HAL_Init();
 
-	/* Configure the system clock to 200 MHz */
-	SystemClock_Config();
-	MX_I2C1_Init();
-	BSP_PB_Init(BUTTON_KEY, BUTTON_MODE_GPIO);
+    /* Configure the system clock */
+    SystemClock_Config();
+    BSP_LED_Init(LED1);
+    BSP_LED_Toggle(LED1);
+    HAL_Delay(1000);
+    BSP_LED_Toggle(LED1);
 
-	/* Init Audio Application */
-	AUDIO_InitApplication();
+    /* Init I2C for SI5351 */
+    MX_I2C1_Init();
 
-	/* Init TS module */
-	BSP_TS_Init(BSP_LCD_GetXSize(), BSP_LCD_GetYSize());
+    BSP_PB_Init(BUTTON_KEY, BUTTON_MODE_GPIO);
 
-	arm_fir_init_q15(&S, NUM_TAPS, (q15_t*) firCoeffs, firState, BLOCK_SIZE);
-	init_sine_table();
-	FillBuffer(audio_buffer, AUDIO_BUFFER_SIZE);
+    /* Init Audio Application (this now starts input recording and playback) */
+    AUDIO_InitApplication();
 
-	// Start playing in circular mode
-	BSP_AUDIO_OUT_Play((uint16_t*) audio_buffer, sizeof(audio_buffer));
+    /* Init TS module if needed */
+    BSP_TS_Init(BSP_LCD_GetXSize(), BSP_LCD_GetYSize());
 
+    /* Initialize DSP structures (kept for later) */
+    arm_fir_init_q15(&S, NUM_TAPS, (q15_t*) firCoeffs, firState, BLOCK_SIZE);
+    init_sine_table();
+    FillBuffer(input_buffer, AUDIO_BUFFER_SIZE); // priming buffer (not used once loopback active)
 
-	uint8_t last_button_state = BSP_PB_GetState(BUTTON_KEY);
-	const int32_t correction = 978;
-	si5351_Init(correction);
-	si5351_SetupCLK0(28000000, SI5351_DRIVE_STRENGTH_4MA);
-	si5351_SetupCLK2(21000000, SI5351_DRIVE_STRENGTH_4MA);
-	si5351_EnableOutputs((1<<0) | (1<<2));
+    uint8_t last_button_state = BSP_PB_GetState(BUTTON_KEY);
+    const int32_t correction = 978;
+    si5351_Init(correction);
+    si5351_SetupCLK0(28000000, SI5351_DRIVE_STRENGTH_4MA);
+    si5351_EnableOutputs((1<<0) | (1<<2));
 
-	while (1) {
-		uint8_t current_button_state = BSP_PB_GetState(BUTTON_KEY);
+    const int frequency_start = 27990000;
+    const int frequency_end = 28010000;
+    int delta_sign = 1;
+    const int step = 20;
+    int frequency = frequency_start;
 
-		// Detect falling edge (button pressed)
-		if (!current_button_state && last_button_state) {
-			lpf_enabled = !lpf_enabled;
+    while (1) {
+        uint8_t current_button_state = BSP_PB_GetState(BUTTON_KEY);
 
-			if (lpf_enabled)
-				LCD_UsrLog("LPF: ON\n");
-			else
-				LCD_UsrLog("LPF: OFF\n");
-		}
+        /* Toggle LPF flag (kept, but doesn't affect loopback) */
+        if (!current_button_state && last_button_state) {
+            lpf_enabled = !lpf_enabled;
+            if (lpf_enabled) LCD_UsrLog("LPF: ON\n");
+            else LCD_UsrLog("LPF: OFF\n");
+        }
 
-		last_button_state = current_button_state;
+        if (frequency > frequency_end || frequency < frequency_start) {
+            delta_sign *= -1;
+        }
+        frequency += (delta_sign * step);
+        si5351_SetupCLK2(frequency, SI5351_DRIVE_STRENGTH_4MA);
 
-		HAL_Delay(10); // debounce
-	}
+        last_button_state = current_button_state;
+        HAL_Delay(10); // debounce
+    }
 }
 
-/*******************************************************************************
- Static Function
- *******************************************************************************/
-
-/**
- * @brief  Audio Application Init.
- * @param  None
- * @retval None
- */
+/* Audio Application Init - initialize input (line-in) and output and start DMA */
 static void AUDIO_InitApplication(void) {
-	/* Configure LED1 */
-	BSP_LED_Init(LED1);
 
-	/* Initialize the LCD */
-	BSP_LCD_Init();
+    /* Initialize the LCD */
+    BSP_LCD_Init();
+    BSP_LCD_LayerDefaultInit(1, LCD_FB_START_ADDRESS);
+    BSP_LCD_SelectLayer(1);
+    BSP_LCD_DisplayOn();
 
-	/* LCD Layer Initialization */
-	BSP_LCD_LayerDefaultInit(1, LCD_FB_START_ADDRESS);
+    /* Init the LCD Log module */
+    LCD_LOG_Init();
+    LCD_LOG_SetHeader((uint8_t*)"SDR Project");
 
-	/* Select the LCD Layer */
-	BSP_LCD_SelectLayer(1);
+	BSP_AUDIO_IN_OUT_Init(INPUT_DEVICE_INPUT_LINE_1,
+			OUTPUT_DEVICE_HEADPHONE, AUDIO_FREQUENCY,
+			DEFAULT_AUDIO_IN_BIT_RESOLUTION, DEFAULT_AUDIO_IN_CHANNEL_NBR);
 
-	/* Enable the display */
-	BSP_LCD_DisplayOn();
+    /* Start recording into input_buffer (circular DMA) */
+    BSP_AUDIO_IN_Record((uint16_t*)input_buffer, AUDIO_BUFFER_SIZE);
 
-	/* Init the LCD Log module */
-	LCD_LOG_Init();
+    /* Start playback from audio_buffer (circular DMA) */
+    BSP_AUDIO_OUT_Play((uint16_t*)output_buffer, AUDIO_BUFFER_SIZE * 2);
+    BSP_AUDIO_IN_SetVolume(VOLUME); // in percent, experiment
 
-	LCD_LOG_SetHeader((uint8_t*) "SDR Project");
-	BSP_AUDIO_OUT_Init(OUTPUT_DEVICE_HEADPHONE, VOLUME, AUDIO_FREQUENCY);
 }
 
+/* I2C1 init for SI5351 (unchanged from earlier) */
 static void MX_I2C1_Init(void) {
-	GPIO_InitTypeDef GPIO_InitStruct = { 0 };
+    GPIO_InitTypeDef GPIO_InitStruct = { 0 };
 
-	// Enable clocks
-	__HAL_RCC_GPIOB_CLK_ENABLE();
-	__HAL_RCC_I2C1_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_I2C1_CLK_ENABLE();
 
-	// Configure PB8 = SCL, PB9 = SDA
-	GPIO_InitStruct.Pin = GPIO_PIN_8 | GPIO_PIN_9;
-	GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;      // Open-drain
-	GPIO_InitStruct.Pull = GPIO_PULLUP;
-	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-	GPIO_InitStruct.Alternate = GPIO_AF4_I2C1;
-	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    GPIO_InitStruct.Pin = GPIO_PIN_8 | GPIO_PIN_9;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF4_I2C1;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-	// Initialize I2C1 peripheral
-	hi2c1.Instance = I2C1;
-	hi2c1.Init.Timing = 0x20404768;    // 100 kHz standard mode
-	hi2c1.Init.OwnAddress1 = 0;
-	hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-	hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-	hi2c1.Init.OwnAddress2 = 0;
-	hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
-	hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-	hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+    hi2c1.Instance = I2C1;
+    hi2c1.Init.Timing = 0x20404768;    // 100 kHz
+    hi2c1.Init.OwnAddress1 = 0;
+    hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+    hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+    hi2c1.Init.OwnAddress2 = 0;
+    hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+    hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+    hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
 
-	if (HAL_I2C_Init(&hi2c1) != HAL_OK) {
-		// Initialization error
-		while (1)
-			;
-	}
+    if (HAL_I2C_Init(&hi2c1) != HAL_OK) {
+        while (1);
+    }
 }
+
 
 /**
  * @brief  System Clock Configuration
@@ -367,50 +357,6 @@ static void SystemClock_Config(void) {
 		while (1) {
 			;
 		}
-	}
-}
-
-/**
- * @brief  Clock Config.
- * @param  hsai: might be required to set audio peripheral predivider if any.
- * @param  AudioFreq: Audio frequency used to play the audio stream.
- * @note   This API is called by BSP_AUDIO_OUT_Init() and BSP_AUDIO_OUT_SetFrequency()
- *         Being __weak it can be overwritten by the application
- * @retval None
- */
-void BSP_AUDIO_OUT_ClockConfig(SAI_HandleTypeDef *hsai, uint32_t AudioFreq,
-		void *Params) {
-	RCC_PeriphCLKInitTypeDef RCC_ExCLKInitStruct;
-
-	HAL_RCCEx_GetPeriphCLKConfig(&RCC_ExCLKInitStruct);
-
-	/* Set the PLL configuration according to the audio frequency */
-	if ((AudioFreq == AUDIO_FREQUENCY_11K) || (AudioFreq == AUDIO_FREQUENCY_22K)
-			|| (AudioFreq == AUDIO_FREQUENCY_44K)) {
-		/* Configure PLLSAI prescalers */
-		/* PLLI2S_VCO: VCO_429M
-		 SAI_CLK(first level) = PLLI2S_VCO/PLLSAIQ = 429/2 = 214.5 Mhz
-		 SAI_CLK_x = SAI_CLK(first level)/PLLI2SDivQ = 214.5/19 = 11.289 Mhz */
-		RCC_ExCLKInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SAI2;
-		RCC_ExCLKInitStruct.Sai2ClockSelection = RCC_SAI2CLKSOURCE_PLLI2S;
-		RCC_ExCLKInitStruct.PLLI2S.PLLI2SP = 8;
-		RCC_ExCLKInitStruct.PLLI2S.PLLI2SN = 429;
-		RCC_ExCLKInitStruct.PLLI2S.PLLI2SQ = 2;
-		RCC_ExCLKInitStruct.PLLI2SDivQ = 19;
-		HAL_RCCEx_PeriphCLKConfig(&RCC_ExCLKInitStruct);
-	} else /* AUDIO_FREQUENCY_8K, AUDIO_FREQUENCY_16K, AUDIO_FREQUENCY_48K), AUDIO_FREQUENCY_96K */
-	{
-		/* SAI clock config
-		 PLLI2S_VCO: VCO_344M
-		 SAI_CLK(first level) = PLLI2S_VCO/PLLSAIQ = 344/7 = 49.142 Mhz
-		 SAI_CLK_x = SAI_CLK(first level)/PLLI2SDivQ = 49.142/1 = 49.142 Mhz */
-		RCC_ExCLKInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SAI2;
-		RCC_ExCLKInitStruct.Sai2ClockSelection = RCC_SAI2CLKSOURCE_PLLI2S;
-		RCC_ExCLKInitStruct.PLLI2S.PLLI2SP = 8;
-		RCC_ExCLKInitStruct.PLLI2S.PLLI2SN = 344;
-		RCC_ExCLKInitStruct.PLLI2S.PLLI2SQ = 7;
-		RCC_ExCLKInitStruct.PLLI2SDivQ = 1;
-		HAL_RCCEx_PeriphCLKConfig(&RCC_ExCLKInitStruct);
 	}
 }
 
@@ -504,7 +450,7 @@ static void MPU_Config(void) {
   * @retval None
   */
 void assert_failed(uint8_t* file, uint32_t line)
-{ 
+{
   /* User can add his own implementation to report the file name and line number,
      ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
 
