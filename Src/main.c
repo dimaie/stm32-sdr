@@ -37,103 +37,7 @@ static void MX_I2C1_Init(void);
 int16_t output_buffer[AUDIO_BUFFER_SIZE];   // stereo output buffer
 int16_t input_buffer[AUDIO_BUFFER_SIZE];   // stereo input buffer (loopback source)
 
-volatile uint8_t lpf_enabled = 1;
-
-#define SINE_TABLE_SIZE 1024
-q15_t sine_table[SINE_TABLE_SIZE];
-
-#define NUM_TAPS 64
-#define BLOCK_SIZE 64   // must match your audio buffer size
-
-/* 64-tap FIR LPF, cutoff 1 kHz @ 48 kHz, Hamming window, scaled to Q15 */
-const q15_t firCoeffs[NUM_TAPS] = {
-    78,95,130,184,257,349,460,589,734,894,1067,1250,1439,1632,1825,2016,
-    2201,2377,2540,2687,2814,2920,3000,3053,3080,3080,3053,3000,2920,2814,2687,2540,
-    2377,2201,2016,1825,1632,1439,1250,1067,894,734,589,460,349,257,184,130,95,
-    78,72,78,95,130,184,257,349,460,589,734,894,1067,1250,1439
-};
-
-arm_fir_instance_q15 S;
-// Use DMA half-buffer size or any safe maximum
-#define FIR_BLOCK_MAX (AUDIO_BUFFER_SIZE / 2)
-q15_t firState[NUM_TAPS + FIR_BLOCK_MAX - 1];
-
-void init_fir(void) {
-    arm_fir_init_q15(&S, NUM_TAPS, (q15_t*) firCoeffs, firState, FIR_BLOCK_MAX);
-}
-
-// Initialize sine table (call once in main)
-void init_sine_table(void) {
-    for (int i = 0; i < SINE_TABLE_SIZE; i++) {
-        sine_table[i] = (q15_t)(32767.0f * sinf(2 * PI * i / SINE_TABLE_SIZE));
-    }
-}
-
-// Phase accumulator
-uint32_t phase_acc = 0;
-uint32_t phase_inc = (uint32_t)((float)SINE_TABLE_SIZE * 200 / AUDIO_FREQUENCY); // initial freq 200 Hz
-
-const q15_t alpha_q15 = 2621; // alpha = 0.08 in Q15 (0.08*32768≈2621)
-
-int direction = 1;  // sweep direction
-float freq = 200.0f; // current frequency
-
-// LPF state: int32_t accumulator in Q15
-int32_t lpf_out = 0;
-
-/* FillBuffer: unchanged — generates sine + optional LPF, currently not used in signal path */
-void FillBuffer(int16_t *buf, int length) {
-    static q15_t inputBlock[FIR_BLOCK_MAX];
-    static q15_t outputBlock[FIR_BLOCK_MAX];
-
-    int processed = 0;
-    while (processed < length) {
-        int nBlock = (length - processed) > FIR_BLOCK_MAX ? FIR_BLOCK_MAX : (length - processed);
-
-        // Generate sine samples for this block
-        for (int n = 0; n < nBlock; n++) {
-            uint32_t index = phase_acc >> (32 - 10);
-            inputBlock[n] = sine_table[index];
-
-            // Advance phase
-            phase_acc += phase_inc;
-            if (phase_acc >= ((uint32_t)SINE_TABLE_SIZE << 22))
-                phase_acc -= ((uint32_t)SINE_TABLE_SIZE << 22);
-        }
-
-        if (lpf_enabled) {
-            arm_fir_q15(&S, inputBlock, outputBlock, nBlock);
-
-            for (int n = 0; n < nBlock; n++) {
-                buf[2 * (processed + n)] = outputBlock[n];
-                buf[2 * (processed + n) + 1] = outputBlock[n];
-            }
-        } else {
-            for (int n = 0; n < nBlock; n++) {
-                buf[2 * (processed + n)] = inputBlock[n];
-                buf[2 * (processed + n) + 1] = inputBlock[n];
-            }
-        }
-
-        processed += nBlock;
-    }
-
-    // Update frequency sweep
-    freq += direction * 2.0f;
-    if (freq >= 5000.0f) {
-        freq = 5000.0f;
-        direction = -1;
-    }
-    if (freq <= 200.0f) {
-        freq = 200.0f;
-        direction = 1;
-    }
-
-    phase_inc = (uint32_t)((freq * (1ULL << 32)) / AUDIO_FREQUENCY);
-}
-
 /* ----------------- AUDIO CALLBACKS: set up loopback ---------------------- */
-
 /* Output callbacks left empty so DMA playback reads from audio_buffer that we fill from input */
 void BSP_AUDIO_OUT_HalfTransfer_CallBack(void) {
     /* no-op: audio_buffer already filled by input callbacks */
@@ -157,6 +61,7 @@ void BSP_AUDIO_IN_TransferComplete_CallBack(void) {
 }
 
 /* ----------------- Main -------------------------------------------------- */
+uint8_t button_pressed = 0;
 
 int main(void) {
     /* Configure the MPU attributes */
@@ -186,39 +91,18 @@ int main(void) {
     /* Init TS module if needed */
     BSP_TS_Init(BSP_LCD_GetXSize(), BSP_LCD_GetYSize());
 
-    /* Initialize DSP structures (kept for later) */
-    arm_fir_init_q15(&S, NUM_TAPS, (q15_t*) firCoeffs, firState, BLOCK_SIZE);
-    init_sine_table();
-    FillBuffer(input_buffer, AUDIO_BUFFER_SIZE); // priming buffer (not used once loopback active)
-
     uint8_t last_button_state = BSP_PB_GetState(BUTTON_KEY);
     const int32_t correction = 978;
     si5351_Init(correction);
-    si5351_SetupCLK0(28000000, SI5351_DRIVE_STRENGTH_4MA);
-    si5351_EnableOutputs((1<<0) | (1<<2));
-
-    const int frequency_start = 27990000;
-    const int frequency_end = 28010000;
-    int delta_sign = 1;
-    const int step = 20;
-    int frequency = frequency_start;
+    si5351_SetupCLK1(28000000, SI5351_DRIVE_STRENGTH_4MA);
+    si5351_EnableOutputs(1 << 1);
 
     while (1) {
         uint8_t current_button_state = BSP_PB_GetState(BUTTON_KEY);
-
         /* Toggle LPF flag (kept, but doesn't affect loopback) */
         if (!current_button_state && last_button_state) {
-            lpf_enabled = !lpf_enabled;
-            if (lpf_enabled) LCD_UsrLog("LPF: ON\n");
-            else LCD_UsrLog("LPF: OFF\n");
+            button_pressed = !button_pressed;
         }
-
-        if (frequency > frequency_end || frequency < frequency_start) {
-            delta_sign *= -1;
-        }
-        frequency += (delta_sign * step);
-        si5351_SetupCLK2(frequency, SI5351_DRIVE_STRENGTH_4MA);
-
         last_button_state = current_button_state;
         HAL_Delay(10); // debounce
     }

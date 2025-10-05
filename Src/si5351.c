@@ -330,6 +330,15 @@ void si5351_CalcIQ(int32_t Fclk, si5351PLLConfig_t* pll_conf, si5351OutputConfig
     pll_conf->denom = Fxtal / 24; // denom can't exceed 0xFFFFF
 }
 
+void si5351_SetupCLK1(int32_t Fclk, si5351DriveStrength_t driveStrength) {
+	si5351PLLConfig_t pll_conf;
+	si5351OutputConfig_t out_conf;
+
+	si5351_Calc(Fclk, &pll_conf, &out_conf);
+	si5351_SetupPLL(SI5351_PLL_B, &pll_conf);
+	si5351_SetupOutput(1, SI5351_PLL_B, driveStrength, &out_conf, 0);
+}
+
 // Setup CLK0 for given frequency and drive strength. Use PLLA.
 void si5351_SetupCLK0(int32_t Fclk, si5351DriveStrength_t driveStrength) {
 	si5351PLLConfig_t pll_conf;
