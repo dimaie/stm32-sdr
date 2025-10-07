@@ -116,51 +116,77 @@ void BSP_AUDIO_OUT_TransferComplete_CallBack(void) {
 }
 
 /* Audio Callbacks */
+/* Audio Callbacks */
 void BSP_AUDIO_IN_HalfTransfer_CallBack(void) {
-	float32_t nco[BLOCK_SIZE];
-	generate_nco_block(nco, BLOCK_SIZE);
+    float32_t i_in[BLOCK_SIZE], q_in[BLOCK_SIZE], nco[BLOCK_SIZE], sum_out[BLOCK_SIZE], mixed_out[BLOCK_SIZE];
 
-	// Compute NCO RMS as input_rms (for LCD consistency)
-	arm_rms_f32(nco, BLOCK_SIZE, &input_rms);
+    // Deinterleave input buffer
+    for (uint32_t i = 0; i < BLOCK_SIZE; i++) {
+        i_in[i] = (float32_t)input_buffer[2 * i] / 32768.0f;      // Left: I
+        q_in[i] = (float32_t)input_buffer[2 * i + 1] / 32768.0f;  // Right: Q
+    }
 
-	// Compute NCO RMS as output_rms
-	arm_rms_f32(nco, BLOCK_SIZE, &output_rms);
+    // Compute input RMS
+    arm_rms_f32(i_in, BLOCK_SIZE, &input_rms);
 
-	// Output 11 kHz NCO to both channels
-	for (uint32_t i = 0; i < BLOCK_SIZE; i++) {
-		int16_t sample = (int16_t) (nco[i] * 32767.0f * output_gain);
-		if (sample > 32767)
-			sample = 32767;
-		if (sample < -32768)
-			sample = -32768;
-		output_buffer[2 * i] = sample;     // Left: 11 kHz NCO
-		output_buffer[2 * i + 1] = sample; // Right: 11 kHz NCO
-	}
+    // Sum I and Q
+    arm_add_f32(i_in, q_in, sum_out, BLOCK_SIZE);
 
-	callback_count++;
+    // Generate 11 kHz NCO
+    generate_nco_block(nco, BLOCK_SIZE);
+
+    // Mix (multiply) I + Q with NCO
+    arm_mult_f32(sum_out, nco, mixed_out, BLOCK_SIZE);
+
+    // Compute output RMS
+    arm_rms_f32(mixed_out, BLOCK_SIZE, &output_rms);
+
+    // Output mixed signal to both channels
+    for (uint32_t i = 0; i < BLOCK_SIZE; i++) {
+        int16_t sample = (int16_t)(mixed_out[i] * 32767.0f * output_gain);
+        if (sample > 32767) sample = 32767;
+        if (sample < -32768) sample = -32768;
+        output_buffer[2 * i] = sample;     // Left: Mixed signal
+        output_buffer[2 * i + 1] = sample; // Right: Mixed signal
+    }
+
+    callback_count++;
 }
 
 void BSP_AUDIO_IN_TransferComplete_CallBack(void) {
-	float32_t nco[BLOCK_SIZE];
-	generate_nco_block(nco, BLOCK_SIZE);
-	// Compute NCO RMS as input_rms
-	arm_rms_f32(nco, BLOCK_SIZE, &input_rms);
+    float32_t i_in[BLOCK_SIZE], q_in[BLOCK_SIZE], nco[BLOCK_SIZE], sum_out[BLOCK_SIZE], mixed_out[BLOCK_SIZE];
 
-	// Compute NCO RMS as output_rms
-	arm_rms_f32(nco, BLOCK_SIZE, &output_rms);
+    // Deinterleave input buffer
+    for (uint32_t i = 0; i < BLOCK_SIZE; i++) {
+        i_in[i] = (float32_t)input_buffer[AUDIO_BUFFER_SIZE / 2 + 2 * i] / 32768.0f;      // Left: I
+        q_in[i] = (float32_t)input_buffer[AUDIO_BUFFER_SIZE / 2 + 2 * i + 1] / 32768.0f;  // Right: Q
+    }
 
-	// Output 11 kHz NCO to both channels
-	for (uint32_t i = 0; i < BLOCK_SIZE; i++) {
-		int16_t sample = (int16_t) (nco[i] * 32767.0f * output_gain);
-		if (sample > 32767)
-			sample = 32767;
-		if (sample < -32768)
-			sample = -32768;
-		output_buffer[AUDIO_BUFFER_SIZE / 2 + 2 * i] = sample; // Left: 11 kHz NCO
-		output_buffer[AUDIO_BUFFER_SIZE / 2 + 2 * i + 1] = sample; // Right: 11 kHz NCO
-	}
+    // Compute input RMS
+    arm_rms_f32(i_in, BLOCK_SIZE, &input_rms);
 
-	callback_count++;
+    // Sum I and Q
+    arm_add_f32(i_in, q_in, sum_out, BLOCK_SIZE);
+
+    // Generate 11 kHz NCO
+    generate_nco_block(nco, BLOCK_SIZE);
+
+    // Mix (multiply) I + Q with NCO
+    arm_mult_f32(sum_out, nco, mixed_out, BLOCK_SIZE);
+
+    // Compute output RMS
+    arm_rms_f32(mixed_out, BLOCK_SIZE, &output_rms);
+
+    // Output mixed signal to both channels
+    for (uint32_t i = 0; i < BLOCK_SIZE; i++) {
+        int16_t sample = (int16_t)(mixed_out[i] * 32767.0f * output_gain);
+        if (sample > 32767) sample = 32767;
+        if (sample < -32768) sample = -32768;
+        output_buffer[AUDIO_BUFFER_SIZE / 2 + 2 * i] = sample;     // Left: Mixed signal
+        output_buffer[AUDIO_BUFFER_SIZE / 2 + 2 * i + 1] = sample; // Right: Mixed signal
+    }
+
+    callback_count++;
 }
 /* Main --------------------------------------------------------------------*/
 int main(void) {
@@ -233,7 +259,7 @@ static void AUDIO_InitApplication(void) {
 
 	BSP_AUDIO_IN_Record((uint16_t*) input_buffer, AUDIO_BUFFER_SIZE);
 	BSP_AUDIO_OUT_Play((uint16_t*) output_buffer, AUDIO_BUFFER_SIZE * 2);
-	BSP_AUDIO_OUT_SetVolume(50); // Set to 50 to avoid clipping
+	BSP_AUDIO_OUT_SetVolume(70); // Set to 50 to avoid clipping
 }
 
 /* I2C1 Init for SI5351 -----------------------------------------------------*/
