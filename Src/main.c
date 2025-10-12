@@ -37,13 +37,11 @@ UART_HandleTypeDef huart1;
 
 float32_t fft_magnitude[FFT_SIZE / 2];
 float32_t fft_magnitude_smoothed[FFT_SIZE / 2] = { 0 }; // Smoothed magnitudes
-
 int16_t output_buffer[AUDIO_BUFFER_SIZE];
 int16_t input_buffer[AUDIO_BUFFER_SIZE];
 float32_t fft_input[FFT_SIZE];
 float32_t fft_input_ready[FFT_SIZE];
 float32_t fft_output[FFT_SIZE];
-float32_t fft_magnitude[FFT_SIZE / 2];
 static float32_t window[FFT_SIZE];
 static volatile uint32_t fft_buffer_index = 0;
 static volatile uint8_t fft_buffer_full = 0;

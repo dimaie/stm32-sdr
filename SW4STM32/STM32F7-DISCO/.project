@@ -52,6 +52,11 @@
 			<locationURI>PARENT-1-PROJECT_LOC/syscalls.c</locationURI>
 		</link>
 		<link>
+			<name>Application/User/filters.c</name>
+			<type>1</type>
+			<location>C:/Users/dmitr/STM32CubeIDE/workspace_1.19.0/SDR/Src/filters.c</location>
+		</link>
+		<link>
 			<name>Application/User/main.c</name>
 			<type>1</type>
 			<locationURI>PARENT-2-PROJECT_LOC/Src/main.c</locationURI>
