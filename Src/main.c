@@ -176,6 +176,11 @@ void init_sine_table(void) {
     }
 }
 
+/* Ensure these global variables are added near other globals (e.g., after output_rms), if not already present */
+float32_t i_filt_rms = 0.0f;
+float32_t q_filt_rms = 0.0f;
+float32_t sum_out_rms = 0.0f;
+
 static void process_audio_block(int16_t *input_buf, int16_t *output_buf) {
     float32_t i_in[BLOCK_SIZE], q_in[BLOCK_SIZE], i_filt[BLOCK_SIZE], q_filt[BLOCK_SIZE];
     float32_t sum_out[BLOCK_SIZE], bpf_out[BLOCK_SIZE], mixed_out[BLOCK_SIZE], lpf_out[BLOCK_SIZE];
@@ -196,6 +201,18 @@ static void process_audio_block(int16_t *input_buf, int16_t *output_buf) {
 
     // Subtract for USB image rejection (I - Q)
     arm_sub_f32(i_filt, q_filt, sum_out, BLOCK_SIZE);
+
+    // Accumulate for FFT (use sum_out for wide RF band view)
+    if (!fft_buffer_full && fft_buffer_index + BLOCK_SIZE <= FFT_SIZE) {
+        memcpy(&fft_input[fft_buffer_index], sum_out, BLOCK_SIZE * sizeof(float32_t));
+        fft_buffer_index += BLOCK_SIZE;
+        if (fft_buffer_index >= FFT_SIZE) {
+            fft_buffer_full = 1;  // Signal main loop to process FFT
+        }
+    }
+    arm_rms_f32(i_filt, BLOCK_SIZE, &i_filt_rms);
+    arm_rms_f32(q_filt, BLOCK_SIZE, &q_filt_rms);
+    arm_rms_f32(sum_out, BLOCK_SIZE, &sum_out_rms);
 
     // Apply USB BPF
     arm_fir_f32(&fir_bpf, sum_out, bpf_out, BLOCK_SIZE);
@@ -220,21 +237,13 @@ static void process_audio_block(int16_t *input_buf, int16_t *output_buf) {
         output_buf[2 * i + 1] = sample;
     }
 
-    // Accumulate for FFT (use sum_out for wide RF band view)
-    if (!fft_buffer_full && fft_buffer_index + BLOCK_SIZE <= FFT_SIZE) {
-        memcpy(&fft_input[fft_buffer_index], sum_out, BLOCK_SIZE * sizeof(float32_t));
-        fft_buffer_index += BLOCK_SIZE;
-        if (fft_buffer_index >= FFT_SIZE) {
-            fft_buffer_full = 1;  // Signal main loop to process FFT
-        }
-    }
-
     callback_count++;
 }
 
 /* Add this define near other constants (e.g., after SPECTRUM_Y_OFFSET) */
 #define MAX_MAGNITUDE    4.0f  // Fixed upper limit for FFT magnitude scaling
 
+/* Modified update_spectrum_display function */
 static void update_spectrum_display(void) {
     if (!fft_buffer_full) return;  // Wait until buffer is ready
 
@@ -277,12 +286,15 @@ static void update_spectrum_display(void) {
     }
 
     // Update footer with RMS and callback count
-    char lcd_text[50];
-    snprintf(lcd_text, sizeof(lcd_text), "In: %.4f Out: %.4f CB: %lu", input_rms, output_rms, callback_count);
-    BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
-    BSP_LCD_FillRect(0, SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT, LCD_WIDTH, LCD_HEIGHT - (SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT));
+    BSP_LCD_SetBackColor(LCD_COLOR_BLACK);
     BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
-    BSP_LCD_DisplayStringAt(0, SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT + 10, (uint8_t*)lcd_text, LEFT_MODE);
+    BSP_LCD_SetFont(&Font12);  // Use smallest font to ensure fit
+    BSP_LCD_FillRect(0, SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT, LCD_WIDTH, LCD_HEIGHT - (SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT));
+    char lcd_text[64];
+    snprintf(lcd_text, sizeof(lcd_text), "In:%.2f I:%.2f Q:%.2f Sum:%.2f Out:%.2f CB:%lu",
+             input_rms, i_filt_rms, q_filt_rms, sum_out_rms, output_rms, callback_count);
+    BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+    BSP_LCD_DisplayStringAt(0, SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT + 4, (uint8_t*)lcd_text, LEFT_MODE);
 }
 
 /* Private function prototypes -----------------------------------------------*/
