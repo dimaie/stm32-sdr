@@ -7,6 +7,7 @@
 #include "si5351.h"
 #include "stm32746g_discovery_audio.h"
 #include "stm32746g_discovery.h"
+#include "stm32746g_discovery_lcd.h"
 #include "stm32f7xx_hal_i2c.h"
 
 // I2C for SI5351
@@ -14,19 +15,24 @@ I2C_HandleTypeDef hi2c1;
 
 #define AUDIO_BUFFER_SIZE   512
 #define AUDIO_FREQUENCY     AUDIO_FREQUENCY_44K  // 44.1 kHz to match Python
-#define BLOCK_SIZE          (AUDIO_BUFFER_SIZE / 4)
-#define HILBERT_TAPS        100   // From Python script
-#define BPF_TAPS            100   // USB BPF
-#define LPF_TAPS            54   // LPF
+#define BLOCK_SIZE          (AUDIO_BUFFER_SIZE / 4)  // 128 samples
+#define HILBERT_TAPS        100  // Matches Python (100 elements)
+#define BPF_TAPS            100  // Matches Python (100 elements)
+#define LPF_TAPS            54   // Matches Python (54 elements)
 #define SINE_TABLE_SIZE     512
 #define AUDIO_FS            44100.0f
 #define NCO_FREQ            11000.0f  // 11 kHz LO
 #define PHASE_TO_INDEX      ((float)SINE_TABLE_SIZE / (2.0f * M_PI))
+#define FFT_SIZE            512  // FFT size for spectrum display
+#define LCD_WIDTH           480
+#define LCD_HEIGHT          272
+#define SPECTRUM_HEIGHT     200  // Height of spectrum plot area
+#define SPECTRUM_Y_OFFSET   20   // Y offset for spectrum plot
 
 int16_t output_buffer[AUDIO_BUFFER_SIZE];
 int16_t input_buffer[AUDIO_BUFFER_SIZE];
 
-// Hilbert filter coefficients for +45° (95 taps, from Python)
+// Hilbert filter coefficients for +45° (100 taps, from Python)
 static const float32_t hilbert_i_coeffs[HILBERT_TAPS] = {
     4.288698225779810E-18f, 0.000866962256721964f, 6.694578973884190E-18f, 0.000723768779644489f,
     6.251950335026000E-18f, 0.000491948708636800f, 9.329793308652210E-18f, 0.000162753915054888f,
@@ -45,7 +51,7 @@ static const float32_t hilbert_i_coeffs[HILBERT_TAPS] = {
     -9.869993202619540E-15f, -0.073799181987711918f, -4.594216166446000E-15f, -0.058469211844324492f,
     -3.304347777777260E-15f, -0.047522100992294508f, 1.045764716612020E-16f, -0.039075967510059088f,
     1.357742476364510E-15f, -0.032247860767888339f, 1.609834995034210E-15f, -0.026578009579594275f,
-    3.029110018978720E-16f, -0.021807474489618426f, 1.269751717122650E-15f, -0.017779413498920069f,
+    3.029110018978720E-18f, -0.021807474489618426f, 1.269751717122650E-15f, -0.017779413498920069f,
     -2.455156751402480E-16f, -0.014390646510711955f, 4.318593097590070E-16f, -0.011566204186358037f,
     -2.073528334337070E-17f, -0.009245418095997261f, 4.939755466124440E-16f, -0.007374279468676965f,
     2.513569241845640E-16f, -0.005901425606391064f, 1.464223979968000E-15f, -0.004776322329186264f,
@@ -55,7 +61,7 @@ static const float32_t hilbert_i_coeffs[HILBERT_TAPS] = {
     -8.694556986426840E-17f, -0.002631365320034318f, 8.518103595547740E-17f, -0.002660346625915069f
 };
 
-// Hilbert filter coefficients for -45° (95 taps, from Python)
+// Hilbert filter coefficients for -45° (100 taps, from Python)
 static const float32_t hilbert_q_coeffs[HILBERT_TAPS] = {
     -0.002660346625914681f, -1.425615451960800E-16f, -0.002631365320034742f, 7.239460181599930E-17f,
     -0.002621113453608740f, 3.656625573314080E-16f, -0.002655502116741606f, -2.681406471145040E-16f,
@@ -64,8 +70,7 @@ static const float32_t hilbert_q_coeffs[HILBERT_TAPS] = {
     -0.004776322329185343f, -3.129479342217880E-16f, -0.005901425606389074f, -5.992210655172320E-16f,
     -0.007374279468676095f, -2.575055438396270E-16f, -0.009245418095996334f, -1.432636145077280E-15f,
     -0.011566204186357842f, 1.855776728505920E-16f, -0.014390646510711451f, -1.223169894210750E-15f,
-    -0.017779413498919743f, -5.077725019792790E-16f, -0.021807474489616407f, -1.494865846637370E-16f,
-    -0.026578009579593605f, -5.619513689420920E-16f, -0.032247860767886542f, -6.845163433330340E-16f,
+    -0.017779413498919743f, -0.021807474489616407f, -0.026578009579593605f, -0.032247860767886542f,
     -0.039075967510061899f, 2.312619114749650E-15f, -0.047522100992295140f, 5.508313753159310E-16f,
     -0.058469211844333152f, 3.653449213341470E-15f, -0.073799181987724130f, 5.543566341328550E-15f,
     -0.098220446790761515f, 7.591005706981040E-15f, -0.147353662629886223f, 2.175090500727820E-14f,
@@ -84,7 +89,7 @@ static const float32_t hilbert_q_coeffs[HILBERT_TAPS] = {
     0.000723768779645844f, -5.864325834209240E-16f, 0.000866962256723557f, -3.337536727527920E-16f
 };
 
-// USB BPF coefficients (95 taps, centered at 12.5 kHz, from Python)
+// USB BPF coefficients (100 taps, centered at 12.5 kHz, from Python)
 static const float32_t bpf_coeffs[BPF_TAPS] = {
     0.000077220197574123f, -1.694364742523110E-6f, -0.000247376363569229f, 0.000172349071145931f,
     0.000442532978562303f, -0.000587921806885401f, -0.000490796464995067f, 0.001245366873040035f,
@@ -148,6 +153,14 @@ uint8_t demod_mode = 0; // 0=USB
 static float32_t nco_phase = 0.0f;
 static const float32_t nco_inc = 2.0f * M_PI * NCO_FREQ / AUDIO_FS;
 
+static arm_rfft_fast_instance_f32 fft_instance;
+static float32_t fft_input[FFT_SIZE];
+static float32_t fft_input_ready[FFT_SIZE];  // Secondary buffer for main loop
+static float32_t fft_output[FFT_SIZE];
+static float32_t fft_magnitude[FFT_SIZE / 2];  // Half size for positive frequencies
+static volatile uint32_t fft_buffer_index = 0;
+static volatile uint8_t fft_buffer_full = 0;
+
 static void generate_nco_block(float32_t *nco_buf, uint32_t size) {
     for (uint32_t i = 0; i < size; i++) {
         uint32_t idx = (uint32_t)(nco_phase * PHASE_TO_INDEX) % SINE_TABLE_SIZE;
@@ -163,6 +176,116 @@ void init_sine_table(void) {
     }
 }
 
+static void process_audio_block(int16_t *input_buf, int16_t *output_buf) {
+    float32_t i_in[BLOCK_SIZE], q_in[BLOCK_SIZE], i_filt[BLOCK_SIZE], q_filt[BLOCK_SIZE];
+    float32_t sum_out[BLOCK_SIZE], bpf_out[BLOCK_SIZE], mixed_out[BLOCK_SIZE], lpf_out[BLOCK_SIZE];
+    float32_t nco[BLOCK_SIZE];
+
+    // Deinterleave input buffer (I: left, Q: right)
+    for (uint32_t i = 0; i < BLOCK_SIZE; i++) {
+        i_in[i] = (float32_t)input_buf[2 * i] / 32768.0f;
+        q_in[i] = (float32_t)input_buf[2 * i + 1] / 32768.0f;
+    }
+
+    // Compute input RMS
+    arm_rms_f32(i_in, BLOCK_SIZE, &input_rms);
+
+    // Apply Hilbert filters
+    arm_fir_f32(&fir_i, i_in, i_filt, BLOCK_SIZE);
+    arm_fir_f32(&fir_q, q_in, q_filt, BLOCK_SIZE);
+
+    // Subtract for USB image rejection (I - Q)
+    arm_sub_f32(i_filt, q_filt, sum_out, BLOCK_SIZE);
+
+    // Apply USB BPF
+    arm_fir_f32(&fir_bpf, sum_out, bpf_out, BLOCK_SIZE);
+
+    // Generate 11 kHz NCO
+    generate_nco_block(nco, BLOCK_SIZE);
+
+    // Mix with NCO
+    arm_mult_f32(bpf_out, nco, mixed_out, BLOCK_SIZE);
+
+    // Apply LPF
+    arm_fir_f32(&fir_lpf, mixed_out, lpf_out, BLOCK_SIZE);
+
+    // Compute output RMS
+    arm_rms_f32(lpf_out, BLOCK_SIZE, &output_rms);
+
+    // Output to both channels
+    for (uint32_t i = 0; i < BLOCK_SIZE; i++) {
+        int16_t sample = (int16_t)(lpf_out[i] * 32767.0f * output_gain);
+        sample = (sample > 32767) ? 32767 : (sample < -32768) ? -32768 : sample;
+        output_buf[2 * i] = sample;
+        output_buf[2 * i + 1] = sample;
+    }
+
+    // Accumulate for FFT (use sum_out for wide RF band view)
+    if (!fft_buffer_full && fft_buffer_index + BLOCK_SIZE <= FFT_SIZE) {
+        memcpy(&fft_input[fft_buffer_index], sum_out, BLOCK_SIZE * sizeof(float32_t));
+        fft_buffer_index += BLOCK_SIZE;
+        if (fft_buffer_index >= FFT_SIZE) {
+            fft_buffer_full = 1;  // Signal main loop to process FFT
+        }
+    }
+
+    callback_count++;
+}
+
+/* Add this define near other constants (e.g., after SPECTRUM_Y_OFFSET) */
+#define MAX_MAGNITUDE    4.0f  // Fixed upper limit for FFT magnitude scaling
+
+static void update_spectrum_display(void) {
+    if (!fft_buffer_full) return;  // Wait until buffer is ready
+
+    // Copy FFT input to secondary buffer and reset flag
+    memcpy(fft_input_ready, fft_input, FFT_SIZE * sizeof(float32_t));
+    fft_buffer_full = 0;
+    fft_buffer_index = 0;
+
+    // Compute FFT
+    arm_rfft_fast_f32(&fft_instance, fft_input_ready, fft_output, 0);
+
+    // Compute magnitude (only first FFT_SIZE/2 bins)
+    arm_cmplx_mag_f32(fft_output, fft_magnitude, FFT_SIZE / 2);
+
+    // Clear LCD spectrum area
+    BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+    BSP_LCD_FillRect(0, SPECTRUM_Y_OFFSET, LCD_WIDTH, SPECTRUM_HEIGHT);
+
+    // Draw grid (horizontal lines for magnitude, vertical for frequency)
+    BSP_LCD_SetTextColor(LCD_COLOR_GRAY);
+    for (int i = 1; i < 5; i++) {
+        BSP_LCD_DrawHLine(0, SPECTRUM_Y_OFFSET + (SPECTRUM_HEIGHT / 5 * i), LCD_WIDTH);
+    }
+    for (int i = 1; i < 5; i++) {
+        int freq = i * (AUDIO_FS / 2) / 5;  // Mark 4.41, 8.82, 13.23, 17.64 kHz
+        int x = (int)((float)freq / (AUDIO_FS / 2) * LCD_WIDTH);
+        BSP_LCD_DrawVLine(x, SPECTRUM_Y_OFFSET, SPECTRUM_HEIGHT);
+    }
+
+    // Draw vertical bars with fixed magnitude scaling
+    BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+    for (int i = 0; i < FFT_SIZE / 2; i++) {
+        int x = (int)((float)i / (FFT_SIZE / 2) * LCD_WIDTH);
+        int bar_width = (LCD_WIDTH + (FFT_SIZE / 2 - 1)) / (FFT_SIZE / 2);  // ~1.875 pixels
+        float32_t scaled_mag = fft_magnitude[i] / MAX_MAGNITUDE;
+        scaled_mag = (scaled_mag > 1.0f) ? 1.0f : scaled_mag;  // Clip to max
+        int bar_height = (int)(scaled_mag * SPECTRUM_HEIGHT);
+        int y = SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT - bar_height;
+        BSP_LCD_FillRect(x, y, bar_width, bar_height);
+    }
+
+    // Update footer with RMS and callback count
+    char lcd_text[50];
+    snprintf(lcd_text, sizeof(lcd_text), "In: %.4f Out: %.4f CB: %lu", input_rms, output_rms, callback_count);
+    BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+    BSP_LCD_FillRect(0, SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT, LCD_WIDTH, LCD_HEIGHT - (SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT));
+    BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+    BSP_LCD_DisplayStringAt(0, SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT + 10, (uint8_t*)lcd_text, LEFT_MODE);
+}
+
+/* Private function prototypes -----------------------------------------------*/
 static void MPU_Config(void);
 static void SystemClock_Config(void);
 static void AUDIO_InitApplication(void);
@@ -173,97 +296,11 @@ void BSP_AUDIO_OUT_HalfTransfer_CallBack(void) {}
 void BSP_AUDIO_OUT_TransferComplete_CallBack(void) {}
 
 void BSP_AUDIO_IN_HalfTransfer_CallBack(void) {
-    float32_t i_in[BLOCK_SIZE], q_in[BLOCK_SIZE], i_filt[BLOCK_SIZE], q_filt[BLOCK_SIZE];
-    float32_t sum_out[BLOCK_SIZE], bpf_out[BLOCK_SIZE], mixed_out[BLOCK_SIZE], lpf_out[BLOCK_SIZE];
-    float32_t nco[BLOCK_SIZE];
-
-    // Deinterleave input buffer (I: left, Q: right)
-    for (uint32_t i = 0; i < BLOCK_SIZE; i++) {
-        i_in[i] = (float32_t)input_buffer[2 * i] / 32768.0f;
-        q_in[i] = (float32_t)input_buffer[2 * i + 1] / 32768.0f;
-    }
-
-    // Compute input RMS
-    arm_rms_f32(i_in, BLOCK_SIZE, &input_rms);
-
-    // Apply Hilbert filters
-    arm_fir_f32(&fir_i, i_in, i_filt, BLOCK_SIZE);
-    arm_fir_f32(&fir_q, q_in, q_filt, BLOCK_SIZE);
-
-    // Subtract for USB image rejection (I - Q)
-    arm_sub_f32(i_filt, q_filt, sum_out, BLOCK_SIZE);
-
-    // Apply USB BPF
-    arm_fir_f32(&fir_bpf, sum_out, bpf_out, BLOCK_SIZE);
-
-    // Generate 11 kHz NCO
-    generate_nco_block(nco, BLOCK_SIZE);
-
-    // Mix with NCO
-    arm_mult_f32(bpf_out, nco, mixed_out, BLOCK_SIZE);
-
-    // Apply LPF
-    arm_fir_f32(&fir_lpf, mixed_out, lpf_out, BLOCK_SIZE);
-
-    // Compute output RMS
-    arm_rms_f32(lpf_out, BLOCK_SIZE, &output_rms);
-
-    // Output to both channels
-    for (uint32_t i = 0; i < BLOCK_SIZE; i++) {
-        int16_t sample = (int16_t)(lpf_out[i] * 32767.0f * output_gain);
-        sample = (sample > 32767) ? 32767 : (sample < -32768) ? -32768 : sample;
-        output_buffer[2 * i] = sample;
-        output_buffer[2 * i + 1] = sample;
-    }
-
-    callback_count++;
+    process_audio_block(&input_buffer[0], &output_buffer[0]);
 }
 
 void BSP_AUDIO_IN_TransferComplete_CallBack(void) {
-    float32_t i_in[BLOCK_SIZE], q_in[BLOCK_SIZE], i_filt[BLOCK_SIZE], q_filt[BLOCK_SIZE];
-    float32_t sum_out[BLOCK_SIZE], bpf_out[BLOCK_SIZE], mixed_out[BLOCK_SIZE], lpf_out[BLOCK_SIZE];
-    float32_t nco[BLOCK_SIZE];
-
-    // Deinterleave input buffer (second half)
-    for (uint32_t i = 0; i < BLOCK_SIZE; i++) {
-        i_in[i] = (float32_t)input_buffer[AUDIO_BUFFER_SIZE / 2 + 2 * i] / 32768.0f;
-        q_in[i] = (float32_t)input_buffer[AUDIO_BUFFER_SIZE / 2 + 2 * i + 1] / 32768.0f;
-    }
-
-    // Compute input RMS
-    arm_rms_f32(i_in, BLOCK_SIZE, &input_rms);
-
-    // Apply Hilbert filters
-    arm_fir_f32(&fir_i, i_in, i_filt, BLOCK_SIZE);
-    arm_fir_f32(&fir_q, q_in, q_filt, BLOCK_SIZE);
-
-    // Subtract for USB image rejection (I - Q)
-    arm_sub_f32(i_filt, q_filt, sum_out, BLOCK_SIZE);
-
-    // Apply USB BPF
-    arm_fir_f32(&fir_bpf, sum_out, bpf_out, BLOCK_SIZE);
-
-    // Generate 11 kHz NCO
-    generate_nco_block(nco, BLOCK_SIZE);
-
-    // Mix with NCO
-    arm_mult_f32(bpf_out, nco, mixed_out, BLOCK_SIZE);
-
-    // Apply LPF
-    arm_fir_f32(&fir_lpf, mixed_out, lpf_out, BLOCK_SIZE);
-
-    // Compute output RMS
-    arm_rms_f32(lpf_out, BLOCK_SIZE, &output_rms);
-
-    // Output to both channels
-    for (uint32_t i = 0; i < BLOCK_SIZE; i++) {
-        int16_t sample = (int16_t)(lpf_out[i] * 32767.0f * output_gain);
-        sample = (sample > 32767) ? 32767 : (sample < -32768) ? -32768 : sample;
-        output_buffer[AUDIO_BUFFER_SIZE / 2 + 2 * i] = sample;
-        output_buffer[AUDIO_BUFFER_SIZE / 2 + 2 * i + 1] = sample;
-    }
-
-    callback_count++;
+    process_audio_block(&input_buffer[AUDIO_BUFFER_SIZE / 2], &output_buffer[AUDIO_BUFFER_SIZE / 2]);
 }
 
 int main(void) {
@@ -286,6 +323,8 @@ int main(void) {
     memset(fir_q_state, 0, sizeof(fir_q_state));
     memset(fir_bpf_state, 0, sizeof(fir_bpf_state));
     memset(fir_lpf_state, 0, sizeof(fir_lpf_state));
+    memset(fft_input, 0, sizeof(fft_input));
+    memset(fft_input_ready, 0, sizeof(fft_input_ready));
 
     init_sine_table();
     arm_fir_init_f32(&fir_i, HILBERT_TAPS, (float32_t*)hilbert_i_coeffs, fir_i_state, BLOCK_SIZE);
@@ -293,8 +332,18 @@ int main(void) {
     arm_fir_init_f32(&fir_bpf, BPF_TAPS, (float32_t*)bpf_coeffs, fir_bpf_state, BLOCK_SIZE);
     arm_fir_init_f32(&fir_lpf, LPF_TAPS, (float32_t*)lpf_coeffs, fir_lpf_state, BLOCK_SIZE);
 
+    // Initialize FFT
+    arm_rfft_fast_init_f32(&fft_instance, FFT_SIZE);
+
     AUDIO_InitApplication();
     BSP_TS_Init(BSP_LCD_GetXSize(), BSP_LCD_GetYSize());
+
+    // Initial LCD setup for spectrum
+    BSP_LCD_Clear(LCD_COLOR_BLACK);
+    BSP_LCD_SetFont(&Font16);
+    BSP_LCD_SetBackColor(LCD_COLOR_BLACK);
+    BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+    BSP_LCD_DisplayStringAt(0, 0, (uint8_t*)"RF Spectrum (0-22.05 kHz)", CENTER_MODE);
 
     uint8_t last_button_state = BSP_PB_GetState(BUTTON_KEY);
     const int32_t correction = 978;
@@ -302,7 +351,6 @@ int main(void) {
     si5351_SetupCLK1(28000000, SI5351_DRIVE_STRENGTH_4MA);
     si5351_EnableOutputs(1 << 1);
 
-    char lcd_text[50];
     while (1) {
         uint8_t current_button_state = BSP_PB_GetState(BUTTON_KEY);
         if (!current_button_state && last_button_state) {
@@ -311,9 +359,12 @@ int main(void) {
         }
         last_button_state = current_button_state;
 
-        snprintf(lcd_text, sizeof(lcd_text), "In: %.4f Out: %.4f CB: %lu", input_rms, output_rms, callback_count);
-        LCD_LOG_SetFooter((uint8_t*)lcd_text);
-        HAL_Delay(100);
+        // Update spectrum display if new FFT data is ready
+        if (fft_buffer_full) {
+            update_spectrum_display();
+        }
+
+        HAL_Delay(10);  // Reduced delay to improve display responsiveness
     }
 }
 
