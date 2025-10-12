@@ -1,3 +1,5 @@
+#define DEBUG
+
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -12,8 +14,9 @@
 
 // I2C for SI5351
 I2C_HandleTypeDef hi2c1;
+UART_HandleTypeDef huart1;
 
-#define FFT_GRID_FREQUENCY_FACTOR   10
+#define FFT_GRID_FREQUENCY_FACTOR   20
 #define FFT_FREQUENCY_FACTOR   		25
 #define AUDIO_BUFFER_SIZE   512
 #define AUDIO_FREQUENCY     AUDIO_FREQUENCY_44K
@@ -281,99 +284,111 @@ static void process_audio_block(int16_t *input_buf, int16_t *output_buf) {
 }
 
 static void update_spectrum_display(void) {
-	static int16_t fft_update_counter = 0;
-	static int16_t fft_grid_update_counter = 0;
-	if (!fft_buffer_full)
-		return;
+    static int16_t fft_update_counter = 0;
+    static int16_t fft_grid_update_counter = 0;
+    static int prev_bar_heights[FFT_SIZE / 2] = {0}; // Store previous bar heights
 
-	++fft_update_counter;
-	if ((fft_update_counter % FFT_FREQUENCY_FACTOR)) {
-		return;
-	}
+    if (!fft_buffer_full)
+        return;
 
-	// Copy FFT input and reset flag
-	memcpy(fft_input_ready, fft_input, FFT_SIZE * sizeof(float32_t));
-	fft_buffer_full = 0;
-	fft_buffer_index = 0;
+    fft_update_counter++;
+    fft_grid_update_counter++; // Increment grid counter only when processing FFT buffer
 
-	// Apply Hann window
-	for (int i = 0; i < FFT_SIZE; i++) {
-		fft_input_ready[i] *= window[i];
-	}
+    // Draw grid every FFT_GRID_FREQUENCY_FACTOR calls (~232 ms)
+    if (fft_grid_update_counter % FFT_GRID_FREQUENCY_FACTOR == 0) {
+        BSP_LCD_SetTextColor(LCD_COLOR_GRAY);
+        for (int i = 1; i < 5; i++) {
+            BSP_LCD_DrawHLine(0, SPECTRUM_Y_OFFSET + (SPECTRUM_HEIGHT / 5 * i), LCD_WIDTH);
+        }
+        for (int i = 1; i < 5; i++) {
+            int freq = i * (AUDIO_FS / 2) / 5;
+            int x = (int)((float)freq / (AUDIO_FS / 2) * LCD_WIDTH);
+            BSP_LCD_DrawVLine(x, SPECTRUM_Y_OFFSET, SPECTRUM_HEIGHT);
+        }
+        fft_grid_update_counter = 0; // Reset grid counter to prevent overflow
+    }
 
-	// Compute FFT
-	arm_rfft_fast_f32(&fft_instance, fft_input_ready, fft_output, 0);
+    // Update spectrum only every FFT_FREQUENCY_FACTOR calls (~290 ms)
+    if (fft_update_counter % FFT_FREQUENCY_FACTOR != 0) {
+        return;
+    }
 
-	// Compute magnitude
-	arm_cmplx_mag_f32(fft_output, fft_magnitude, FFT_SIZE / 2);
+    // Copy FFT input and reset flag
+    memcpy(fft_input_ready, fft_input, FFT_SIZE * sizeof(float32_t));
+    fft_buffer_full = 0;
+    fft_buffer_index = 0;
+
+    // Apply Hann window
+    for (int i = 0; i < FFT_SIZE; i++) {
+        fft_input_ready[i] *= window[i];
+    }
+
+    // Compute FFT
+    arm_rfft_fast_f32(&fft_instance, fft_input_ready, fft_output, 0);
+
+    // Compute magnitude
+    arm_cmplx_mag_f32(fft_output, fft_magnitude, FFT_SIZE / 2);
 
 #if ENABLE_FFT_SMOOTHING
-	// Apply exponential moving average (EMA) smoothing
-	for (int i = 0; i < FFT_SIZE / 2; i++) {
-		fft_magnitude_smoothed[i] = FFT_SMOOTH_ALPHA * fft_magnitude[i]
-				+ (1.0f - FFT_SMOOTH_ALPHA) * fft_magnitude_smoothed[i];
-	}
+    // Apply exponential moving average (EMA) smoothing
+    for (int i = 0; i < FFT_SIZE / 2; i++) {
+        fft_magnitude_smoothed[i] = FFT_SMOOTH_ALPHA * fft_magnitude[i] +
+                                   (1.0f - FFT_SMOOTH_ALPHA) * fft_magnitude_smoothed[i];
+    }
 #endif
 
-	// Clear LCD spectrum area
-	BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
-	BSP_LCD_FillRect(0, SPECTRUM_Y_OFFSET, LCD_WIDTH, SPECTRUM_HEIGHT);
+    // Clear previous bars
+    BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+    for (int i = 0; i < FFT_SIZE / 2; i++) {
+        float freq = i * (AUDIO_FS / FFT_SIZE);
+        if (freq > 20000.0f) continue; // Clip at 20 kHz
+        int x = (int)((float)i / (FFT_SIZE / 2) * LCD_WIDTH);
+        int bar_width = (LCD_WIDTH + (FFT_SIZE / 2 - 1)) / (FFT_SIZE / 2);
+        int prev_height = prev_bar_heights[i];
+        if (prev_height > 0) {
+            int y = SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT - prev_height;
+            BSP_LCD_FillRect(x, y, bar_width, prev_height);
+        }
+    }
 
-	// Draw grid
-	++fft_update_counter;
-	if (!(fft_grid_update_counter % FFT_GRID_FREQUENCY_FACTOR)) {
-		BSP_LCD_SetTextColor(LCD_COLOR_GRAY);
-		for (int i = 1; i < 5; i++) {
-			BSP_LCD_DrawHLine(0, SPECTRUM_Y_OFFSET + (SPECTRUM_HEIGHT / 5 * i),
-					LCD_WIDTH);
-		}
-		for (int i = 1; i < 5; i++) {
-			int freq = i * (AUDIO_FS / 2) / 5;
-			int x = (int) ((float) freq / (AUDIO_FS / 2) * LCD_WIDTH);
-			BSP_LCD_DrawVLine(x, SPECTRUM_Y_OFFSET, SPECTRUM_HEIGHT);
-		}
-	}
-
-	// Draw vertical bars with smoothed or raw magnitudes
-	BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
-	for (int i = 0; i < FFT_SIZE / 2; i++) {
-		float freq = i * (AUDIO_FS / FFT_SIZE);
-		if (freq > 20000.0f)
-			continue; // Clip at 20 kHz
-		int x = (int) ((float) i / (FFT_SIZE / 2) * LCD_WIDTH);
-		int bar_width = (LCD_WIDTH + (FFT_SIZE / 2 - 1)) / (FFT_SIZE / 2);
+    // Draw new bars and store heights
+    BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+    for (int i = 0; i < FFT_SIZE / 2; i++) {
+        float freq = i * (AUDIO_FS / FFT_SIZE);
+        if (freq > 20000.0f) {
+            prev_bar_heights[i] = 0; // No bar drawn, reset height
+            continue;
+        }
+        int x = (int)((float)i / (FFT_SIZE / 2) * LCD_WIDTH);
+        int bar_width = (LCD_WIDTH + (FFT_SIZE / 2 - 1)) / (FFT_SIZE / 2);
 #if ENABLE_FFT_SMOOTHING
-		float32_t scaled_mag = fft_magnitude_smoothed[i] / MAX_MAGNITUDE;
+        float32_t scaled_mag = fft_magnitude_smoothed[i] / MAX_MAGNITUDE;
 #else
         float32_t scaled_mag = fft_magnitude[i] / MAX_MAGNITUDE;
 #endif
-		scaled_mag = (scaled_mag > 1.0f) ? 1.0f : scaled_mag;
-		int bar_height = (int) (scaled_mag * SPECTRUM_HEIGHT);
-		int y = SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT - bar_height;
-		BSP_LCD_FillRect(x, y, bar_width, bar_height);
-	}
+        scaled_mag = (scaled_mag > 1.0f) ? 1.0f : scaled_mag;
+        int bar_height = (int)(scaled_mag * SPECTRUM_HEIGHT);
+        int y = SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT - bar_height;
+        BSP_LCD_FillRect(x, y, bar_width, bar_height);
+        prev_bar_heights[i] = bar_height; // Store new height
+    }
 
-	// Update footer
-	BSP_LCD_SetBackColor(LCD_COLOR_BLACK);
-	BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
-	BSP_LCD_SetFont(&Font12);
-	BSP_LCD_FillRect(0, SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT, LCD_WIDTH,
-	LCD_HEIGHT - (SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT));
-	char lcd_text[64];
-	snprintf(lcd_text, sizeof(lcd_text),
-			"In:%.2f I:%.2f Q:%.2f Sum:%.2f Out:%.2f CB:%lu", input_rms,
-			i_filt_rms, q_filt_rms, sum_out_rms, output_rms, callback_count);
-	BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
-	BSP_LCD_DisplayStringAt(0, SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT + 4,
-			(uint8_t*) lcd_text, LEFT_MODE);
+#ifdef DEBUG
+    // Send debug info to UART terminal
+    char debug_text[64];
+    snprintf(debug_text, sizeof(debug_text),
+             "In:%.2f I:%.2f Q:%.2f Sum:%.2f Out:%.2f CB:%lu\r\n",
+             input_rms, i_filt_rms, q_filt_rms, sum_out_rms, output_rms, callback_count);
+    HAL_UART_Transmit(&huart1, (uint8_t*)debug_text, strlen(debug_text), HAL_MAX_DELAY);
+#endif
 }
-
 /* Private function prototypes */
 static void MPU_Config(void);
 static void SystemClock_Config(void);
 static void AUDIO_InitApplication(void);
 static void CPU_CACHE_Enable(void);
 static void MX_I2C1_Init(void);
+static void MX_USART1_UART_Init(void);
 
 void BSP_AUDIO_OUT_HalfTransfer_CallBack(void) {
 }
@@ -394,6 +409,7 @@ int main(void) {
 	CPU_CACHE_Enable();
 	HAL_Init();
 	SystemClock_Config();
+	MX_USART1_UART_Init();
 	BSP_LED_Init(LED1);
 	BSP_LED_Toggle(LED1);
 	HAL_Delay(1000);
@@ -454,8 +470,35 @@ int main(void) {
 			update_spectrum_display();
 		}
 
-		HAL_Delay(1);
+		HAL_Delay(2);
 	}
+}
+
+static void MX_USART1_UART_Init(void) {
+    __HAL_RCC_USART1_CLK_ENABLE();
+
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    // USART1 TX: PA9, RX: PA10 (STM32F746G-DISCO)
+    GPIO_InitStruct.Pin = GPIO_PIN_9 | GPIO_PIN_10;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF7_USART1;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    huart1.Instance = USART1;
+    huart1.Init.BaudRate = 115200;
+    huart1.Init.WordLength = UART_WORDLENGTH_8B;
+    huart1.Init.StopBits = UART_STOPBITS_1;
+    huart1.Init.Parity = UART_PARITY_NONE;
+    huart1.Init.Mode = UART_MODE_TX_RX;
+    huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+    huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+    huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+    if (HAL_UART_Init(&huart1) != HAL_OK) {
+        while (1); // Error handling
+    }
 }
 
 static void AUDIO_InitApplication(void) {
