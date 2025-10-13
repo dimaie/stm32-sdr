@@ -140,6 +140,7 @@ int get_x(int i) {
 	return (LCD_WIDTH - 1) - (int) ((float) i / (FFT_SIZE / 2) * LCD_WIDTH);
 }
 
+#define BIN_TO_COMPENSATE_ATTENUATION 220
 // Update spectrum display
 void update_spectrum_display(DSPContext *dsp) {
 	static int16_t fft_update_counter = 0;
@@ -214,7 +215,7 @@ void update_spectrum_display(DSPContext *dsp) {
 		int x = get_x(i);
 		int bar_width = (LCD_WIDTH + (FFT_SIZE / 2 - 1)) / (FFT_SIZE / 2);
 		// Apply exponential gain for bins 220–255 (~20–22 kHz)
-		float32_t gain = (i >= 220) ? 1.0f + 0.85f * expf(0.1f * (i - 232)) : 1.0f;
+		float32_t gain = (i >= BIN_TO_COMPENSATE_ATTENUATION) ? 1.0f + 0.22f * expf(0.1f * (i - BIN_TO_COMPENSATE_ATTENUATION)) : 1.0f;
 #if ENABLE_FFT_SMOOTHING
 		float32_t scaled_mag = gain * dsp->fft_magnitude_smoothed[i] / MAX_MAGNITUDE;
 #else
