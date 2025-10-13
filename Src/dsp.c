@@ -136,6 +136,10 @@ void DSP_ProcessAudioBlock(DSPContext *dsp, int16_t *input_buf,
 	dsp->callback_count++;
 }
 
+int get_x(int i) {
+	return (LCD_WIDTH - 1) - (int) ((float) i / (FFT_SIZE / 2) * LCD_WIDTH);
+}
+
 // Update spectrum display
 void update_spectrum_display(DSPContext *dsp) {
 	static int16_t fft_update_counter = 0;
@@ -197,10 +201,7 @@ void update_spectrum_display(DSPContext *dsp) {
 	// Clear previous bars
 	BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
 	for (int i = 0; i < FFT_SIZE / 2; i++) {
-		float freq = i * (AUDIO_FS / FFT_SIZE);
-		if (freq > 20000.0f)
-			continue; // Clip at 20 kHz
-		int x = (int) ((float) i / (FFT_SIZE / 2) * LCD_WIDTH);
+		int x = get_x(i);
 		int bar_width = (LCD_WIDTH + (FFT_SIZE / 2 - 1)) / (FFT_SIZE / 2);
 		int prev_height = prev_bar_heights[i];
 		if (prev_height > 0) {
@@ -212,12 +213,7 @@ void update_spectrum_display(DSPContext *dsp) {
 	// Draw new bars and store heights
 	BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
 	for (int i = 0; i < FFT_SIZE / 2; i++) {
-		float freq = i * (AUDIO_FS / FFT_SIZE);
-		if (freq > 20000.0f) {
-			prev_bar_heights[i] = 0; // No bar drawn, reset height
-			continue;
-		}
-		int x = (int) ((float) i / (FFT_SIZE / 2) * LCD_WIDTH);
+		int x = get_x(i);
 		int bar_width = (LCD_WIDTH + (FFT_SIZE / 2 - 1)) / (FFT_SIZE / 2);
 #if ENABLE_FFT_SMOOTHING
 		float32_t scaled_mag = dsp->fft_magnitude_smoothed[i] / MAX_MAGNITUDE;
