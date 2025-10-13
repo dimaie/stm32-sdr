@@ -144,7 +144,7 @@ int get_x(int i) {
 void update_spectrum_display(DSPContext *dsp) {
 	static int16_t fft_update_counter = 0;
 	static int16_t fft_grid_update_counter = 0;
-	static int prev_bar_heights[FFT_SIZE / 2] = { 0 }; // Store previous bar heights
+	static int prev_bar_heights[FFT_SIZE / 2] = {0}; // Store previous bar heights
 
 	if (!dsp->fft_buffer_full)
 		return;
@@ -161,7 +161,7 @@ void update_spectrum_display(DSPContext *dsp) {
 		}
 		for (int i = 1; i < 5; i++) {
 			int freq = i * (AUDIO_FS / 2) / 5;
-			int x = (int) ((float) freq / (AUDIO_FS / 2) * LCD_WIDTH);
+			int x = (int)((float)freq / (AUDIO_FS / 2) * LCD_WIDTH);
 			BSP_LCD_DrawVLine(x, SPECTRUM_Y_OFFSET, SPECTRUM_HEIGHT);
 		}
 		fft_grid_update_counter = 0; // Reset grid counter to prevent overflow
@@ -183,8 +183,7 @@ void update_spectrum_display(DSPContext *dsp) {
 	}
 
 	// Compute FFT
-	arm_rfft_fast_f32(&dsp->fft_instance, dsp->fft_input_ready, dsp->fft_output,
-			0);
+	arm_rfft_fast_f32(&dsp->fft_instance, dsp->fft_input_ready, dsp->fft_output, 0);
 
 	// Compute magnitude
 	arm_cmplx_mag_f32(dsp->fft_output, dsp->fft_magnitude, FFT_SIZE / 2);
@@ -192,16 +191,15 @@ void update_spectrum_display(DSPContext *dsp) {
 #if ENABLE_FFT_SMOOTHING
 	// Apply exponential moving average (EMA) smoothing
 	for (int i = 0; i < FFT_SIZE / 2; i++) {
-		dsp->fft_magnitude_smoothed[i] = FFT_SMOOTH_ALPHA
-				* dsp->fft_magnitude[i]
-				+ (1.0f - FFT_SMOOTH_ALPHA) * dsp->fft_magnitude_smoothed[i];
+		dsp->fft_magnitude_smoothed[i] = FFT_SMOOTH_ALPHA * dsp->fft_magnitude[i] +
+		                                (1.0f - FFT_SMOOTH_ALPHA) * dsp->fft_magnitude_smoothed[i];
 	}
 #endif
 
 	// Clear previous bars
 	BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
 	for (int i = 0; i < FFT_SIZE / 2; i++) {
-		int x = get_x(i);
+		int x = get_x(i); // Reversed: high freq (~22 kHz, ~6.799 MHz) at x≈0 (left), low freq (0 Hz, ~7.001 MHz) at x≈479 (right)
 		int bar_width = (LCD_WIDTH + (FFT_SIZE / 2 - 1)) / (FFT_SIZE / 2);
 		int prev_height = prev_bar_heights[i];
 		if (prev_height > 0) {
@@ -215,25 +213,29 @@ void update_spectrum_display(DSPContext *dsp) {
 	for (int i = 0; i < FFT_SIZE / 2; i++) {
 		int x = get_x(i);
 		int bar_width = (LCD_WIDTH + (FFT_SIZE / 2 - 1)) / (FFT_SIZE / 2);
+		// Apply exponential gain for bins 220–255 (~20–22 kHz)
+		float32_t gain = (i >= 220) ? 1.0f + 0.85f * expf(0.1f * (i - 232)) : 1.0f;
 #if ENABLE_FFT_SMOOTHING
-		float32_t scaled_mag = dsp->fft_magnitude_smoothed[i] / MAX_MAGNITUDE;
+		float32_t scaled_mag = gain * dsp->fft_magnitude_smoothed[i] / MAX_MAGNITUDE;
 #else
-        float32_t scaled_mag = dsp->fft_magnitude[i] / MAX_MAGNITUDE;
+		float32_t scaled_mag = gain * dsp->fft_magnitude[i] / MAX_MAGNITUDE;
 #endif
 		scaled_mag = (scaled_mag > 1.0f) ? 1.0f : scaled_mag;
-		int bar_height = (int) (scaled_mag * SPECTRUM_HEIGHT);
+		int bar_height = (int)(scaled_mag * SPECTRUM_HEIGHT);
 		int y = SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT - bar_height;
 		BSP_LCD_FillRect(x, y, bar_width, bar_height);
 		prev_bar_heights[i] = bar_height; // Store new height
 	}
 
+	fft_update_counter = 0; // Reset counter to prevent overflow
+
 #ifdef DEBUG
-    // Send debug info to UART terminal
-    char debug_text[64];
-    snprintf(debug_text, sizeof(debug_text),
-             "In:%.2f I:%.2f Q:%.2f Sum:%.2f Out:%.2f CB:%lu\r\n",
-             dsp->input_rms, dsp->i_filt_rms, dsp->q_filt_rms, dsp->sum_out_rms,
-             dsp->output_rms, dsp->callback_count);
-    HAL_UART_Transmit(&huart1, (uint8_t*)debug_text, strlen(debug_text), HAL_MAX_DELAY);
+	// Send debug info to UART terminal
+	char debug_text[64];
+	snprintf(debug_text, sizeof(debug_text),
+	         "In:%.2f I:%.2f Q:%.2f Sum:%.2f Out:%.2f CB:%lu\r\n",
+	         dsp->input_rms, dsp->i_filt_rms, dsp->q_filt_rms, dsp->sum_out_rms,
+	         dsp->output_rms, dsp->callback_count);
+	HAL_UART_Transmit(&huart1, (uint8_t*)debug_text, strlen(debug_text), HAL_MAX_DELAY);
 #endif
 }
