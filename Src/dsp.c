@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <math.h>
 
+#define BIN_TO_COMPENSATE_ATTENUATION 220
+
 // Global DSP context
 DSPContext dsp;
 
@@ -33,8 +35,16 @@ void DSP_Init(DSPContext *dsp) {
 	dsp->callback_count = 0;
 	dsp->output_gain = 1.0f;
 	dsp->demod_mode = 0; // USB
-	dsp->button_pressed = 0;
 	dsp->nco_inc = 2.0f * M_PI * NCO_FREQ / AUDIO_FS;
+
+	// Initialize gain table for FFT magnitude compensation
+	for (int i = 0; i < FFT_SIZE / 2; i++) {
+		if (i >= BIN_TO_COMPENSATE_ATTENUATION) {
+			dsp->fft_gain[i] = 1.0f + 0.22f * expf(0.1f * (i - BIN_TO_COMPENSATE_ATTENUATION));
+		} else {
+			dsp->fft_gain[i] = 1.0f;
+		}
+	}
 	// Initialize sine table and Hann window
 	for (int i = 0; i < SINE_TABLE_SIZE; i++) {
 		dsp->sine_table[i] = sinf(2.0f * M_PI * i / SINE_TABLE_SIZE);
@@ -140,7 +150,6 @@ int get_x(int i) {
 	return (LCD_WIDTH - 1) - (int) ((float) i / (FFT_SIZE / 2) * LCD_WIDTH);
 }
 
-#define BIN_TO_COMPENSATE_ATTENUATION 220
 // Update spectrum display
 void update_spectrum_display(DSPContext *dsp) {
 	static int16_t fft_update_counter = 0;
@@ -215,7 +224,8 @@ void update_spectrum_display(DSPContext *dsp) {
 		int x = get_x(i);
 		int bar_width = (LCD_WIDTH + (FFT_SIZE / 2 - 1)) / (FFT_SIZE / 2);
 		// Apply exponential gain for bins 220–255 (~20–22 kHz)
-		float32_t gain = (i >= BIN_TO_COMPENSATE_ATTENUATION) ? 1.0f + 0.22f * expf(0.1f * (i - BIN_TO_COMPENSATE_ATTENUATION)) : 1.0f;
+		// Apply precomputed gain for all bins
+		float32_t gain = dsp->fft_gain[i];
 #if ENABLE_FFT_SMOOTHING
 		float32_t scaled_mag = gain * dsp->fft_magnitude_smoothed[i] / MAX_MAGNITUDE;
 #else

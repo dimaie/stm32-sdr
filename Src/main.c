@@ -12,6 +12,8 @@
 I2C_HandleTypeDef hi2c1;
 UART_HandleTypeDef huart1;
 
+uint8_t button_pressed = 0;
+
 // Audio callback functions
 void BSP_AUDIO_OUT_HalfTransfer_CallBack(void) {
 }
@@ -72,7 +74,7 @@ int main(void) {
     while (1) {
         uint8_t current_button_state = BSP_PB_GetState(BUTTON_KEY);
         if (!current_button_state && last_button_state) {
-            dsp.button_pressed = !dsp.button_pressed;
+            button_pressed = !button_pressed;
             BSP_LED_Toggle(LED1);
         }
         last_button_state = current_button_state;

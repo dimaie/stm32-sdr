@@ -33,6 +33,7 @@ typedef struct {
     float32_t fft_input_ready[FFT_SIZE];
     float32_t fft_output[FFT_SIZE];
     float32_t window[FFT_SIZE];
+	float32_t fft_gain[FFT_SIZE / 2]; // Gain table for FFT magnitude compensation
     float32_t sine_table[SINE_TABLE_SIZE];
     float32_t fir_i_state[HILBERT_TAPS + BLOCK_SIZE - 1];
     float32_t fir_q_state[HILBERT_TAPS + BLOCK_SIZE - 1];
@@ -60,7 +61,6 @@ typedef struct {
     uint32_t callback_count;
     float32_t output_gain;
     uint8_t demod_mode;
-    uint8_t button_pressed;
 
     float32_t nco_inc;
 } DSPContext;
