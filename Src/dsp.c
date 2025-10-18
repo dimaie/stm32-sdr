@@ -206,11 +206,11 @@ void update_spectrum_display(DSPContext *dsp) {
 	}
 #endif
 
+	int bar_width = (LCD_WIDTH + (FFT_SIZE / 2 - 1)) / (FFT_SIZE / 2);
 	// Clear previous bars
 	BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
 	for (int i = 0; i < FFT_SIZE / 2; i++) {
 		int x = get_x(i); // Reversed: high freq (~22 kHz, ~6.799 MHz) at x≈0 (left), low freq (0 Hz, ~7.001 MHz) at x≈479 (right)
-		int bar_width = (LCD_WIDTH + (FFT_SIZE / 2 - 1)) / (FFT_SIZE / 2);
 		int prev_height = prev_bar_heights[i];
 		if (prev_height > 0) {
 			int y = SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT - prev_height;
@@ -222,7 +222,7 @@ void update_spectrum_display(DSPContext *dsp) {
 	BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
 	for (int i = 0; i < FFT_SIZE / 2; i++) {
 		int x = get_x(i);
-		int bar_width = (LCD_WIDTH + (FFT_SIZE / 2 - 1)) / (FFT_SIZE / 2);
+		//int bar_width = (LCD_WIDTH + (FFT_SIZE / 2 - 1)) / (FFT_SIZE / 2);
 		// Apply exponential gain for bins 220–255 (~20–22 kHz)
 		// Apply precomputed gain for all bins
 		float32_t gain = dsp->fft_gain[i];

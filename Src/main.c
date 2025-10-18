@@ -60,10 +60,6 @@ int main(void) {
 
     // Initial LCD setup
     BSP_LCD_Clear(LCD_COLOR_BLACK);
-    BSP_LCD_SetFont(&Font16);
-    BSP_LCD_SetBackColor(LCD_COLOR_BLACK);
-    BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
-    BSP_LCD_DisplayStringAt(0, 0, (uint8_t*)"RF Spectrum (0-20 kHz)", CENTER_MODE);
 
     uint8_t last_button_state = BSP_PB_GetState(BUTTON_KEY);
     const int32_t correction = 978;
@@ -116,8 +112,8 @@ static void MX_USART1_UART_Init(void) {
 
 static void AUDIO_InitApplication(void) {
     BSP_LCD_Init();
-    BSP_LCD_LayerDefaultInit(1, LCD_FB_START_ADDRESS);
-    BSP_LCD_SelectLayer(1);
+    BSP_LCD_LayerDefaultInit(0, LCD_FB_START_ADDRESS);
+    BSP_LCD_SelectLayer(0);
     BSP_LCD_DisplayOn();
     LCD_LOG_Init();
     BSP_AUDIO_IN_OUT_Init(INPUT_DEVICE_INPUT_LINE_1, OUTPUT_DEVICE_HEADPHONE,
