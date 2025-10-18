@@ -162,7 +162,7 @@ void update_spectrum_display(DSPContext *dsp) {
 	fft_update_counter++;
 	fft_grid_update_counter++; // Increment grid counter only when processing FFT buffer
 
-	// Draw grid every FFT_GRID_FREQUENCY_FACTOR calls (~232 ms)
+	// Draw grid every FFT_GRID_FREQUENCY_FACTOR calls (~232 ms) - disabled per user
 	if (fft_grid_update_counter % FFT_GRID_FREQUENCY_FACTOR == 0) {
 		BSP_LCD_SetTextColor(LCD_COLOR_GRAY);
 		for (int i = 1; i < 5; i++) {
@@ -207,22 +207,9 @@ void update_spectrum_display(DSPContext *dsp) {
 #endif
 
 	int bar_width = (LCD_WIDTH + (FFT_SIZE / 2 - 1)) / (FFT_SIZE / 2);
-	// Clear previous bars
-	BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+	// Update bars based on height differences
 	for (int i = 0; i < FFT_SIZE / 2; i++) {
 		int x = get_x(i); // Reversed: high freq (~22 kHz, ~6.799 MHz) at x≈0 (left), low freq (0 Hz, ~7.001 MHz) at x≈479 (right)
-		int prev_height = prev_bar_heights[i];
-		if (prev_height > 0) {
-			int y = SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT - prev_height;
-			BSP_LCD_FillRect(x, y, bar_width, prev_height);
-		}
-	}
-
-	// Draw new bars and store heights
-	BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
-	for (int i = 0; i < FFT_SIZE / 2; i++) {
-		int x = get_x(i);
-		// Apply exponential gain for bins 220–255 (~20–22 kHz)
 		// Apply precomputed gain for all bins
 		float32_t gain = dsp->fft_gain[i];
 #if ENABLE_FFT_SMOOTHING
@@ -232,9 +219,27 @@ void update_spectrum_display(DSPContext *dsp) {
 #endif
 		scaled_mag = (scaled_mag > 1.0f) ? 1.0f : scaled_mag;
 		int bar_height = (int)(scaled_mag * SPECTRUM_HEIGHT);
+		int prev_height = prev_bar_heights[i];
 		int y = SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT - bar_height;
-		BSP_LCD_FillRect(x, y, bar_width, bar_height);
-		prev_bar_heights[i] = bar_height; // Store new height
+
+		if (bar_height > prev_height) {
+			// Draw additional height for taller bars
+			BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+			int draw_height = bar_height - prev_height;
+			int draw_y = SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT - bar_height;
+			BSP_LCD_FillRect(x, draw_y, bar_width, draw_height);
+		} else if (bar_height < prev_height) {
+			// Clear difference for shorter bars
+			BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+			int clear_height = prev_height - bar_height;
+			int clear_y = SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT - prev_height;
+			BSP_LCD_FillRect(x, clear_y, bar_width, clear_height);
+			// Draw new bar
+			BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+			BSP_LCD_FillRect(x, y, bar_width, bar_height);
+		}
+		// Skip if heights are equal to reduce draws
+		prev_bar_heights[i] = bar_height; // Update stored height
 	}
 
 	fft_update_counter = 0; // Reset counter to prevent overflow
