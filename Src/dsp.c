@@ -222,7 +222,6 @@ void update_spectrum_display(DSPContext *dsp) {
 	BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
 	for (int i = 0; i < FFT_SIZE / 2; i++) {
 		int x = get_x(i);
-		//int bar_width = (LCD_WIDTH + (FFT_SIZE / 2 - 1)) / (FFT_SIZE / 2);
 		// Apply exponential gain for bins 220–255 (~20–22 kHz)
 		// Apply precomputed gain for all bins
 		float32_t gain = dsp->fft_gain[i];
