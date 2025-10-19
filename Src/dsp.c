@@ -6,6 +6,7 @@
 #include <math.h>
 
 #define BIN_TO_COMPENSATE_ATTENUATION 220
+extern UART_HandleTypeDef huart1;
 
 // Global DSP context
 DSPContext dsp;

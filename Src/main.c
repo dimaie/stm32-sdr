@@ -6,7 +6,8 @@
 #include "stm32746g_discovery_lcd.h"
 #include "stm32746g_discovery_ts.h"
 #include "stm32f7xx_hal.h"
-#include  "lcd_log.h"
+#include "lcd_log.h"
+#include "command_parser.h"
 #include <string.h>
 
 // I2C for SI5351
@@ -14,6 +15,7 @@ I2C_HandleTypeDef hi2c1;
 UART_HandleTypeDef huart1;
 
 uint8_t button_pressed = 0;
+static uint8_t received_byte; // For UART interrupt receive
 
 // Audio callback functions
 void BSP_AUDIO_OUT_HalfTransfer_CallBack(void) {
@@ -29,6 +31,18 @@ void BSP_AUDIO_IN_HalfTransfer_CallBack(void) {
 void BSP_AUDIO_IN_TransferComplete_CallBack(void) {
     DSP_ProcessAudioBlock(&dsp, &dsp.input_buffer[AUDIO_BUFFER_SIZE / 2],
                          &dsp.output_buffer[AUDIO_BUFFER_SIZE / 2]);
+}
+
+// UART Rx complete callback
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+    if (huart == &huart1) {
+        command_parser_process(received_byte, &sdr);
+        HAL_UART_Receive_IT(&huart1, &received_byte, 1); // Restart interrupt receive
+    }
+}
+
+void USART1_IRQHandler(void) {
+    HAL_UART_IRQHandler(&huart1);
 }
 
 // Private function prototypes
@@ -53,9 +67,15 @@ int main(void) {
     MX_I2C1_Init();
     BSP_PB_Init(BUTTON_KEY, BUTTON_MODE_GPIO);
 
+    // Initialize SDR and command parser
+    SDR_init(&sdr);
+    command_parser_init();
+
+    // Start UART interrupt receive
+    HAL_UART_Receive_IT(&huart1, &received_byte, 1);
+
     // Initialize DSP context
     DSP_Init(&dsp);
-    SDR_init(&sdr);
 
     AUDIO_InitApplication();
     BSP_TS_Init(BSP_LCD_GetXSize(), BSP_LCD_GetYSize());
@@ -82,33 +102,6 @@ int main(void) {
         }
 
         HAL_Delay(2);
-    }
-}
-
-static void MX_USART1_UART_Init(void) {
-    __HAL_RCC_USART1_CLK_ENABLE();
-
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    // USART1 TX: PA9, RX: PA10 (STM32F746G-DISCO)
-    GPIO_InitStruct.Pin = GPIO_PIN_9 | GPIO_PIN_10;
-    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    GPIO_InitStruct.Alternate = GPIO_AF7_USART1;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-    huart1.Instance = USART1;
-    huart1.Init.BaudRate = 115200;
-    huart1.Init.WordLength = UART_WORDLENGTH_8B;
-    huart1.Init.StopBits = UART_STOPBITS_1;
-    huart1.Init.Parity = UART_PARITY_NONE;
-    huart1.Init.Mode = UART_MODE_TX_RX;
-    huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-    huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-    huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-    if (HAL_UART_Init(&huart1) != HAL_OK) {
-        while (1); // Error handling
     }
 }
 
@@ -151,6 +144,43 @@ static void MX_I2C1_Init(void) {
     if (HAL_I2C_Init(&hi2c1) != HAL_OK) {
         while (1);
     }
+}
+
+static void MX_USART1_UART_Init(void) {
+    __HAL_RCC_USART1_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    // TX: PA9, RX: PB7
+    GPIO_InitStruct.Pin = GPIO_PIN_9;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF7_USART1;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    GPIO_InitStruct.Pin = GPIO_PIN_7;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF7_USART1;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    huart1.Instance = USART1;
+    huart1.Init.BaudRate = 115200;
+    huart1.Init.WordLength = UART_WORDLENGTH_8B;
+    huart1.Init.StopBits = UART_STOPBITS_1;
+    huart1.Init.Parity = UART_PARITY_NONE;
+    huart1.Init.Mode = UART_MODE_TX_RX;
+    huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+    huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+    if (HAL_UART_Init(&huart1) != HAL_OK)
+        while (1);
+
+    HAL_NVIC_SetPriority(USART1_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(USART1_IRQn);
 }
 
 static void SystemClock_Config(void) {

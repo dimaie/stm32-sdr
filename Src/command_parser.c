@@ -3,40 +3,10 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "stm32f7xx_hal.h"
-#include "sdr.h"
+#include "command_parser.h"
 
-// UART handle (defined in main.c or similar)
+// UART handle (defined in main.c)
 extern UART_HandleTypeDef huart1;
-
-// Parameter type
-typedef enum {
-    PARAM_NUMBER,
-    PARAM_STRING
-} ParamType;
-
-// Parameter validation rules
-typedef struct {
-    ParamType type; // Number or string
-    int is_compulsory; // 1 = compulsory, 0 = optional
-    union {
-        struct { // For number parameters
-            int32_t min_value;
-            int32_t max_value;
-        } number;
-        struct { // For string parameters
-            const char **valid_values; // Null-terminated array of valid strings
-            uint32_t valid_count; // Number of valid values
-        } string;
-    } rules;
-} CommandParam;
-
-// Command definition
-typedef struct {
-    const char *name; // Command name (case-insensitive)
-    void (*action)(void *context, const char **params, uint32_t param_count); // Action function
-    CommandParam *params; // Array of parameters
-    uint32_t param_count; // Number of parameters
-} Command;
 
 // Forward declarations for action functions
 void freq_action(void *context, const char **params, uint32_t param_count);
@@ -44,10 +14,10 @@ void freq_action(void *context, const char **params, uint32_t param_count);
 // Valid VFOs for 'freq' command
 static const char *valid_vfos[] = {"A", "B", NULL};
 
-// Command table (add more commands as needed)
+// Command table
 static Command commands[] = {
     {
-        "freq", // Command name
+        "freqs", // Command name
         freq_action, // Action function
         (CommandParam[]) {
             { // Parameter 1: VFO (string, optional)
@@ -88,7 +58,7 @@ static int is_valid_number(const char *str, int32_t *value) {
 // Validate parameter against rules
 static int validate_param(const char *param, const CommandParam *rule, char *error_msg, uint32_t error_len) {
     if (!param && rule->is_compulsory) {
-        snprintf(error_msg, error_len, "Error: Missing compulsory parameter\n");
+        snprintf(error_msg, error_len, "\r\nError: Missing compulsory parameter\r\n");
         return 0;
     }
     if (!param) return 1; // Optional parameter omitted
@@ -96,11 +66,11 @@ static int validate_param(const char *param, const CommandParam *rule, char *err
     if (rule->type == PARAM_NUMBER) {
         int32_t value;
         if (!is_valid_number(param, &value)) {
-            snprintf(error_msg, error_len, "Error: Invalid number '%s'\n", param);
+            snprintf(error_msg, error_len, "\r\nError: Invalid number '%s'\r\n", param);
             return 0;
         }
         if (value < rule->rules.number.min_value || value > rule->rules.number.max_value) {
-            snprintf(error_msg, error_len, "Error: Number '%s' out of range [%ld, %ld]\n",
+            snprintf(error_msg, error_len, "\r\nError: Number '%s' out of range [%ld, %ld]\r\n",
                      param, rule->rules.number.min_value, rule->rules.number.max_value);
             return 0;
         }
@@ -121,7 +91,7 @@ static int validate_param(const char *param, const CommandParam *rule, char *err
             }
         }
         if (!valid) {
-            snprintf(error_msg, error_len, "Error: Invalid string '%s'\n", param);
+            snprintf(error_msg, error_len, "\r\nError: Invalid string '%s'\r\n", param);
             return 0;
         }
     }
@@ -146,7 +116,7 @@ void parse_command(const char *input, void *context) {
     }
 
     if (token_count == 0) {
-        char error_msg[] = "Error: Empty command\n";
+        char error_msg[] = "\r\nError: Empty command\r\n";
         HAL_UART_Transmit(&huart1, (uint8_t*)error_msg, strlen(error_msg), HAL_MAX_DELAY);
         return;
     }
@@ -166,7 +136,7 @@ void parse_command(const char *input, void *context) {
 
     if (!cmd) {
         char error_msg[64];
-        snprintf(error_msg, sizeof(error_msg), "Error: Unknown command '%s'\n", tokens[0]);
+        snprintf(error_msg, sizeof(error_msg), "\r\nError: Unknown command '%s'\r\n", tokens[0]);
         HAL_UART_Transmit(&huart1, (uint8_t*)error_msg, strlen(error_msg), HAL_MAX_DELAY);
         return;
     }
@@ -174,7 +144,7 @@ void parse_command(const char *input, void *context) {
     // Validate parameters
     if (token_count - 1 > cmd->param_count) {
         char error_msg[64];
-        snprintf(error_msg, sizeof(error_msg), "Error: Too many parameters for '%s'\n", tokens[0]);
+        snprintf(error_msg, sizeof(error_msg), "\r\nError: Too many parameters for '%s'\r\n", tokens[0]);
         HAL_UART_Transmit(&huart1, (uint8_t*)error_msg, strlen(error_msg), HAL_MAX_DELAY);
         return;
     }
@@ -214,18 +184,29 @@ void freq_action(void *context, const char **params, uint32_t param_count) {
 
     // Notify user
     char response[64];
-    snprintf(response, sizeof(response), "OK: VFO %c, Freq %lu Hz\n", radio->current_vfo, radio->frequency);
+    snprintf(response, sizeof(response), "\r\nOK: VFO %c, Freq %lu Hz\r\n", radio->current_vfo, radio->frequency);
     HAL_UART_Transmit(&huart1, (uint8_t*)response, strlen(response), HAL_MAX_DELAY);
 }
 
 // Initialize command parser
 void command_parser_init(void) {
     buffer_index = 0;
-    // Start UART receive (e.g., in main.c)
+    memset(command_buffer, 0, MAX_COMMAND_LEN);
 }
 
 // Process incoming UART data
 void command_parser_process(uint8_t data, void *context) {
+    // Handle Backspace (ASCII 0x08 or 0x7F/DEL)
+    if ((data == 0x08 || data == 0x7F) && buffer_index > 0) {
+        buffer_index--;
+        command_buffer[buffer_index] = '\0';
+        // Echo Backspace sequence (move back, overwrite with space, move back)
+        uint8_t bs_seq[] = { data, ' ', data };
+        HAL_UART_Transmit(&huart1, bs_seq, 3, HAL_MAX_DELAY);
+        return;
+    }
+
+    // Handle Enter (CR or LF, ASCII 0x0D or 0x0A)
     if (data == '\n' || data == '\r') {
         if (buffer_index > 0) {
             command_buffer[buffer_index] = '\0';
@@ -234,5 +215,7 @@ void command_parser_process(uint8_t data, void *context) {
         }
     } else if (buffer_index < MAX_COMMAND_LEN - 1) {
         command_buffer[buffer_index++] = (char)data;
+        // Echo character to terminal
+        HAL_UART_Transmit(&huart1, &data, 1, HAL_MAX_DELAY);
     }
 }
