@@ -1,4 +1,5 @@
 #include "dsp.h"
+#include "sdr.h"
 #include "si5351.h"
 #include "stm32746g_discovery.h"
 #include "stm32746g_discovery_audio.h"
@@ -54,6 +55,7 @@ int main(void) {
 
     // Initialize DSP context
     DSP_Init(&dsp);
+    SDR_init(&sdr);
 
     AUDIO_InitApplication();
     BSP_TS_Init(BSP_LCD_GetXSize(), BSP_LCD_GetYSize());
