@@ -17,7 +17,7 @@ static const char *valid_vfos[] = {"A", "B", NULL};
 // Command table
 static Command commands[] = {
     {
-        "freqs", // Command name
+        "freqr", // Command name
         freq_action, // Action function
         (CommandParam[]) {
             { // Parameter 1: VFO (string, optional)
@@ -28,7 +28,7 @@ static Command commands[] = {
             { // Parameter 2: Frequency step (number, optional)
                 .type = PARAM_NUMBER,
                 .is_compulsory = 0,
-                .rules.number = {1, 1000000} // Range: 1 Hz to 1 MHz
+                .rules.number = {-1000000, 1000000} // Range: -1 MHz to 1 MHz
             }
         },
         2 // Number of parameters
@@ -178,10 +178,7 @@ void freq_action(void *context, const char **params, uint32_t param_count) {
     if (param_count >= 2 && params[1]) {
         step = atoi(params[1]);
     }
-
-    radio->frequency += step;
-    radio->current_vfo = vfo;
-
+    SDR_set_frequency(radio, vfo == 'A' ? VFO_A : VFO_B, radio->frequency + step);
     // Notify user
     char response[64];
     snprintf(response, sizeof(response), "\r\nOK: VFO %c, Freq %lu Hz\r\n", radio->current_vfo, radio->frequency);

@@ -68,15 +68,12 @@ int main(void) {
     BSP_PB_Init(BUTTON_KEY, BUTTON_MODE_GPIO);
 
     // Initialize SDR and command parser
-    SDR_init(&sdr);
     command_parser_init();
-
     // Start UART interrupt receive
     HAL_UART_Receive_IT(&huart1, &received_byte, 1);
-
+    SDR_init(&sdr);
     // Initialize DSP context
     DSP_Init(&dsp);
-
     AUDIO_InitApplication();
     BSP_TS_Init(BSP_LCD_GetXSize(), BSP_LCD_GetYSize());
 
@@ -84,11 +81,6 @@ int main(void) {
     BSP_LCD_Clear(LCD_COLOR_BLACK);
 
     uint8_t last_button_state = BSP_PB_GetState(BUTTON_KEY);
-    const int32_t correction = 978;
-    si5351_Init(correction);
-    si5351_SetupCLK1(28000000, SI5351_DRIVE_STRENGTH_4MA);
-    si5351_EnableOutputs(1 << 1);
-
     while (1) {
         uint8_t current_button_state = BSP_PB_GetState(BUTTON_KEY);
         if (!current_button_state && last_button_state) {
