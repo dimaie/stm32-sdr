@@ -67,6 +67,11 @@
 			<location>C:/Users/dmitr/STM32CubeIDE/workspace_1.19.0/SDR/Src/filters.c</location>
 		</link>
 		<link>
+			<name>Application/User/font7segs.c</name>
+			<type>1</type>
+			<location>C:/Users/dmitr/STM32CubeIDE/workspace_1.19.0/SDR/Src/font7segs.c</location>
+		</link>
+		<link>
 			<name>Application/User/main.c</name>
 			<type>1</type>
 			<locationURI>PARENT-2-PROJECT_LOC/Src/main.c</locationURI>

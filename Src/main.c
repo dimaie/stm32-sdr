@@ -1,5 +1,6 @@
 #include "dsp.h"
 #include "sdr.h"
+#include "main.h"
 #include "si5351.h"
 #include "stm32746g_discovery.h"
 #include "stm32746g_discovery_audio.h"
@@ -79,6 +80,17 @@ int main(void) {
 
     // Initial LCD setup
     BSP_LCD_Clear(LCD_COLOR_BLACK);
+    BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+    BSP_LCD_SetBackColor(LCD_COLOR_BLACK);
+    BSP_LCD_SetFont(&Font7segs);
+    uint32_t lcd_height = BSP_LCD_GetYSize(); // Get screen height in pixels
+    uint32_t font_height = BSP_LCD_GetFont()->Height;
+
+    // Compute Y coordinate for bottom line
+    uint32_t y_pos = lcd_height - font_height;
+
+    // Draw string at the bottom-left corner
+    BSP_LCD_DisplayStringAt(0, y_pos, (uint8_t *)"0123456789", LEFT_MODE);
 
     uint8_t last_button_state = BSP_PB_GetState(BUTTON_KEY);
     while (1) {
