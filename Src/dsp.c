@@ -157,8 +157,9 @@ void update_spectrum_display(DSPContext *dsp) {
 	static int16_t fft_grid_update_counter = 0;
 	static int prev_bar_heights[FFT_SIZE / 2] = {0}; // Store previous bar heights
 
-	if (!dsp->fft_buffer_full)
+	if (!dsp->fft_buffer_full) {
 		return;
+	}
 
 	fft_update_counter++;
 	fft_grid_update_counter++; // Increment grid counter only when processing FFT buffer

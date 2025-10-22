@@ -101,10 +101,7 @@ int main(void) {
         }
         last_button_state = current_button_state;
 
-        if (dsp.fft_buffer_full) {
-            update_spectrum_display(&dsp);
-        }
-
+        update_spectrum_display(&dsp);
         HAL_Delay(2);
     }
 }
