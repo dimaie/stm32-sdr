@@ -87,6 +87,11 @@
 			<location>C:/Users/dmitr/STM32CubeIDE/workspace_1.19.0/SDR/Src/si5351.c</location>
 		</link>
 		<link>
+			<name>Application/User/si5351_nt7s.c</name>
+			<type>1</type>
+			<location>C:/Users/dmitr/STM32CubeIDE/workspace_1.19.0/SDR/Src/si5351_nt7s.c</location>
+		</link>
+		<link>
 			<name>Application/User/stm32f7xx_it.c</name>
 			<type>1</type>
 			<locationURI>PARENT-2-PROJECT_LOC/Src/stm32f7xx_it.c</locationURI>

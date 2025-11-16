@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include "si5351_nt7s.h"
 
 #define DEFAULT_FREQUENCY_STEP 	50
 #define INTERMEDIATE_FREQ		11000
@@ -11,6 +12,7 @@ typedef struct Component {
 } Component;
 
 typedef struct {
+	Si5351 si5351;
     char current_vfo; // Current VFO ('A' or 'B')
     uint32_t frequency; // Current frequency (Hz)
     uint32_t freq_step; // Default frequency step (Hz)
@@ -26,7 +28,7 @@ typedef enum {
 extern SDR sdr;
 
 void SDR_init(SDR* sdr);
-void SDR_set_frequency(SDR* sdr, VFO vfo, int32_t frequency);
+void SDR_set_frequency(SDR* sdr, VFO vfo, uint32_t frequency);
 void SDR_draw(SDR *sdr);
 
 typedef struct Button {

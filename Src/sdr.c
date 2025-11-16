@@ -1,5 +1,4 @@
 #include "sdr.h"
-#include "si5351.h"
 
 SDR sdr;
 
@@ -19,8 +18,11 @@ void SDR_init(SDR *sdr) {
 	sdr->freq_step = DEFAULT_FREQUENCY_STEP;
 	sdr->current_vfo = 'A'; // Default VFO
 	sdr->frequency = 0;
-	const int32_t correction = 978;
-	si5351_Init(correction);
+	si5351_create(&(sdr->si5351), SI5351_BUS_BASE_ADDR);
+	si5351_init(&(sdr->si5351), SI5351_CRYSTAL_LOAD_8PF, 0, 0);
+	//si5351_drive_strength(&(sdr->si5351), SI5351_CLK1, SI5351_DRIVE_4MA);
+
+
 	SDR_set_frequency(sdr, VFO_A, 28000000);
 	static Component *_drawables[] = {
 			(Component*)&filter_button,
@@ -30,18 +32,17 @@ void SDR_init(SDR *sdr) {
 	sdr->drawables_count = sizeof(_drawables) / sizeof(_drawables[0]);
 }
 
-void SDR_set_frequency(SDR *sdr, VFO vfo, int32_t frequency) {
+void SDR_set_frequency(SDR *sdr, VFO vfo, uint32_t frequency) {
 	if (sdr->frequency == frequency) {
 		return;
 	}
 	sdr->frequency = frequency;
+	uint64_t l_frequency = frequency * 100;
 	if (vfo == VFO_A) {
-		frequency = (frequency + INTERMEDIATE_FREQ) * 4;
-		si5351_SetupCLK1(frequency, SI5351_DRIVE_STRENGTH_4MA);
-		si5351_EnableOutputs(1 << 1);
+		l_frequency = (l_frequency + (INTERMEDIATE_FREQ * 100)) * 4;
+		si5351_set_freq(&(sdr->si5351), l_frequency, SI5351_CLK1);
 	} else {
-		si5351_SetupCLK2(frequency, SI5351_DRIVE_STRENGTH_4MA);
-		si5351_EnableOutputs(1 << 2);
+		si5351_set_freq(&(sdr->si5351), l_frequency, SI5351_CLK0);
 	}
 }
 
