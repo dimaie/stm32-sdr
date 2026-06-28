@@ -103,8 +103,14 @@ void DSP_ProcessAudioBlock(DSPContext *dsp, int16_t *input_buf,
 	arm_fir_f32(&dsp->fir_i, i_in, i_filt, BLOCK_SIZE);
 	arm_fir_f32(&dsp->fir_q, q_in, q_filt, BLOCK_SIZE);
 
-	// Subtract for USB image rejection (I - Q)
-	arm_sub_f32(i_filt, q_filt, sum_out, BLOCK_SIZE);
+	// sideband selection
+	if (dsp->demod_mode == 0) {
+		// Subtract for USB image rejection (I - Q)
+		arm_sub_f32(i_filt, q_filt, sum_out, BLOCK_SIZE);
+	} else {
+		// Add for LSB image rejection (I + Q)
+		arm_add_f32(i_filt, q_filt, sum_out, BLOCK_SIZE);
+	}
 
 	// Accumulate for FFT
 	if (!dsp->fft_buffer_full && dsp->fft_buffer_index + BLOCK_SIZE <= FFT_SIZE) {
@@ -198,7 +204,10 @@ void update_spectrum_display(DSPContext *dsp) {
 	arm_rfft_fast_f32(&dsp->fft_instance, dsp->fft_input_ready, dsp->fft_output, 0);
 
 	// Compute magnitude
-	arm_cmplx_mag_f32(dsp->fft_output, dsp->fft_magnitude, FFT_SIZE / 2);
+	// DC is in fft_output[0], Nyquist is in fft_output[1]
+	float32_t dc_val = dsp->fft_output[0];
+	arm_cmplx_mag_f32(dsp->fft_output + 2, dsp->fft_magnitude + 1, (FFT_SIZE / 2) - 1);
+	dsp->fft_magnitude[0] = fabsf(dc_val);
 
 #if ENABLE_FFT_SMOOTHING
 	// Apply exponential moving average (EMA) smoothing
@@ -224,21 +233,22 @@ void update_spectrum_display(DSPContext *dsp) {
 		int prev_height = prev_bar_heights[i];
 		int y = SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT - bar_height;
 
+		int width = (x + bar_width > LCD_WIDTH) ? (LCD_WIDTH - x) : bar_width;
 		if (bar_height > prev_height) {
 			// Draw additional height for taller bars
 			BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
 			int draw_height = bar_height - prev_height;
 			int draw_y = SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT - bar_height;
-			BSP_LCD_FillRect(x, draw_y, bar_width, draw_height);
+			BSP_LCD_FillRect(x, draw_y, width, draw_height);
 		} else if (bar_height < prev_height) {
 			// Clear difference for shorter bars
 			BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
 			int clear_height = prev_height - bar_height;
 			int clear_y = SPECTRUM_Y_OFFSET + SPECTRUM_HEIGHT - prev_height;
-			BSP_LCD_FillRect(x, clear_y, bar_width, clear_height);
+			BSP_LCD_FillRect(x, clear_y, width, clear_height);
 			// Draw new bar
 			BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
-			BSP_LCD_FillRect(x, y, bar_width, bar_height);
+			BSP_LCD_FillRect(x, y, width, bar_height);
 		}
 		// Skip if heights are equal to reduce draws
 		prev_bar_heights[i] = bar_height; // Update stored height

@@ -89,9 +89,7 @@ int main(void) {
     // Compute Y coordinate for bottom line
     uint32_t y_pos = lcd_height - font_height;
 
-    // Draw string at the bottom-left corner
-    BSP_LCD_DisplayStringAt(0, y_pos, (uint8_t *)"0123456789", LEFT_MODE);
-
+    uint32_t last_frequency = 0xFFFFFFFF;
     uint8_t last_button_state = BSP_PB_GetState(BUTTON_KEY);
     while (1) {
         uint8_t current_button_state = BSP_PB_GetState(BUTTON_KEY);
@@ -100,6 +98,24 @@ int main(void) {
             BSP_LED_Toggle(LED1);
         }
         last_button_state = current_button_state;
+
+        if (sdr.frequency != last_frequency) {
+            last_frequency = sdr.frequency;
+            uint32_t mhz = sdr.frequency / 1000000;
+            uint32_t khz = (sdr.frequency % 1000000) / 1000;
+            uint32_t hz_10 = (sdr.frequency % 1000) / 10;
+            char freq_str[32];
+            snprintf(freq_str, sizeof(freq_str), "%02lu'%03lu.%02lu",
+                     (unsigned long)mhz, (unsigned long)khz, (unsigned long)hz_10);
+
+            // Clear the bottom line to prevent ghosting
+            BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+            BSP_LCD_FillRect(0, y_pos, BSP_LCD_GetXSize(), font_height);
+
+            // Draw the frequency right-aligned
+            BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+            BSP_LCD_DisplayStringAt(0, y_pos, (uint8_t *)freq_str, RIGHT_MODE);
+        }
 
         update_spectrum_display(&dsp);
         HAL_Delay(2);

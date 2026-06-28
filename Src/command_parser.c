@@ -17,7 +17,7 @@ static const char *valid_vfos[] = {"A", "B", NULL};
 // Command table
 static Command commands[] = {
     {
-        "freqr", // Command name
+        "freq", // Command name
         freq_action, // Action function
         (CommandParam[]) {
             { // Parameter 1: VFO (string, optional)

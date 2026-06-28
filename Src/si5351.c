@@ -142,8 +142,8 @@ void si5351_SetupPLL(si5351PLL_t pll, si5351PLLConfig_t* conf) {
     uint8_t baseaddr = (pll == SI5351_PLL_A ? 26 : 34);
     si5351_writeBulk(baseaddr, P1, P2, P3, 0, 0);
 
-    // Reset both PLLs
-    si5351_write(SI5351_REGISTER_177_PLL_RESET, (1<<7) | (1<<5) );
+    // Reset the configured PLL
+    si5351_write(SI5351_REGISTER_177_PLL_RESET, pll == SI5351_PLL_A ? (1<<5) : (1<<7));
 }
 
 // Configures PLL source, drive strength, multisynth divider, Rdivider and phaseOffset.
