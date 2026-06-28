@@ -13,9 +13,9 @@
 #define AUDIO_FS            44100.0f
 #define NCO_FREQ            11000.0f
 #define PHASE_TO_INDEX      ((float)SINE_TABLE_SIZE / (2.0f * M_PI))
-#define FFT_SMOOTH_ALPHA    0.3f
+#define FFT_SMOOTH_ALPHA    0.08f
 #define ENABLE_FFT_SMOOTHING 1
-#define FFT_FREQUENCY_FACTOR 25
+#define FFT_FREQUENCY_FACTOR 5
 #define FFT_GRID_FREQUENCY_FACTOR 20
 #define LCD_WIDTH           480
 #define SPECTRUM_HEIGHT     200
